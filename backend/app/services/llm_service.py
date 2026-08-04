@@ -1065,6 +1065,40 @@ class LLMService:
             "recent_posts_context": compact_recent_posts_context,
         }
 
+    def _call_registry_provider(
+        self,
+        *,
+        task_type: str,
+        response_input: list[dict[str, Any]],
+        prompt_section_names: list[str],
+        prompt_token_estimate: int,
+    ) -> dict[str, Any]:
+        """Run generation through a registered non-OpenAI provider.
+
+        Imported inside the method so this module never pulls a vendor SDK at
+        import time -- the OpenAI path must keep working with no other provider
+        package installed.
+        """
+        from app.services.providers import ProviderError, get_text_provider
+
+        try:
+            provider = get_text_provider(self.primary_provider)
+            return provider.generate(
+                task_type=task_type,
+                response_input=response_input,
+                max_output_tokens=self._max_output_tokens(task_type),
+            )
+        except ProviderError as exc:
+            raise LLMServiceError(
+                exc.safe_message,
+                code=exc.code,
+                status_code=exc.status_code,
+                model_provider=exc.provider,
+                model_name=exc.model_name,
+                prompt_token_estimate=prompt_token_estimate,
+                prompt_section_names=list(prompt_section_names),
+            ) from exc
+
     def run_agent(
         self,
         *,
@@ -1082,14 +1116,6 @@ class LLMService:
         playbook_context: dict | None = None,
         reel_context: dict | None = None,
     ) -> dict[str, Any]:
-        if self.primary_provider != "openai":
-            raise LLMServiceError(
-                f"Unsupported LLM provider '{self.primary_provider}'",
-                code="generation_failed",
-                status_code=502,
-                model_provider=self.primary_provider,
-            )
-
         prepared_generation = self._prepare_generation(
             message=message,
             task_type=task_type,
@@ -1104,6 +1130,24 @@ class LLMService:
             playbook_context=playbook_context,
             reel_context=reel_context,
         )
+
+        if self.primary_provider != "openai":
+            # Non-OpenAI providers are handled by the registry. The prompt is
+            # already built above, so every provider sees the same sections and
+            # the same task context -- only the wire format differs.
+            response_payload = self._call_registry_provider(
+                task_type=task_type,
+                response_input=prepared_generation["response_input"],
+                prompt_section_names=prepared_generation["prompt_section_names"],
+                prompt_token_estimate=prepared_generation["prompt_token_estimate"],
+            )
+            return {
+                **response_payload,
+                "account_id": account_id,
+                "used_langflow": False,
+                "prompt_section_names": prepared_generation["prompt_section_names"],
+                "prompt_token_estimate": prepared_generation["prompt_token_estimate"],
+            }
 
         try:
             response_payload = self._call_openai_with_fallback(

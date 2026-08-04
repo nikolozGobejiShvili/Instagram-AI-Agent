@@ -1,8 +1,32 @@
-fastapi
-uvicorn[standard]
-python-dotenv
-httpx
-beautifulsoup4
-python-multipart
-pypdf
-python-docx
+# Pinned to the versions the test suite is green against. The previous file was
+# unpinned and also omitted packages the code imports (chromadb) and the tests
+# need (pytest), so a fresh install did not reproduce a working environment.
+
+# --- web ---
+fastapi==0.135.2
+uvicorn[standard]==0.42.0
+python-dotenv==1.2.2
+httpx==0.28.1
+python-multipart==0.0.27
+
+# --- model providers ---
+# Text/analysis: Claude Sonnet 4.6. Images: Gemini.
+anthropic==0.97.0
+google-genai==1.73.1
+
+# --- carousel rendering ---
+# Slide text is drawn in code rather than by the image model, which renders text
+# unreliably — Georgian especially.
+pillow==12.2.0
+
+# --- content extraction ---
+beautifulsoup4==4.12.3
+pypdf==6.10.2
+python-docx==1.2.0
+
+# --- retrieval ---
+# Imported lazily by deterministic_knowledge_retrieval_service; was missing here.
+chromadb==1.5.8
+
+# --- tests ---
+pytest==9.0.3
