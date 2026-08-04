@@ -1,0 +1,26 @@
+# Secrets must never enter an image layer — a layer is readable even if a later
+# step deletes the file.
+.env
+*.env
+.env.*
+
+# Runtime state and local environments
+backend/.venv/
+backend/logs/
+backend/app/data/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.benchmarks/
+
+# Not needed at runtime
+.git/
+.gitignore
+.apex/
+docs/
+backend/docs/
+backend/tests/
+tools/
+*.pdf
+*.zip
+*.exe
