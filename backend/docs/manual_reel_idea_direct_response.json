@@ -1,0 +1,12 @@
+{
+  "status_code": 502,
+  "json": {
+    "error": {
+      "code": "generation_failed",
+      "message": "Agent generation failed",
+      "details": "Direct LLM generation failed: Client error '429 Too Many Requests' for url 'https://api.openai.com/v1/responses'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429",
+      "task_type": "reel_idea",
+      "account_id": null
+    }
+  }
+}

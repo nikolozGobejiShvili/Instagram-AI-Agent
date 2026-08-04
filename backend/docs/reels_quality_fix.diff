@@ -1,0 +1,1268 @@
+--- C:\Users\Greench Pc\AppData\Local\Temp\reels_quality_fix_backups\agent.py.bak
++++ backend/app/schemas/agent.py
+@@ -23,9 +23,12 @@
+ 
+     title: str | None = None
+     hook: str | None = None
++    format_type: str | None = None
++    trend_or_pattern_used: str | None = None
++    niche_adaptation: str | None = None
+     main_idea: str | None = None
+     shot_list: list[str] = Field(default_factory=list)
+-    caption_idea: str | None = None
++    why_it_can_work: str | None = None
+     cta: str | None = None
+ 
+ 
+@@ -228,23 +231,27 @@
+         json_schema_extra={
+             "examples": [
+                 {
+-                    "reply": "Hook:\nStop the scroll in the first 2 seconds.\n\nMain idea:\nOpen with a fast emotional product moment and connect it to the audience's everyday problem.\n\nShot list:\n1. Product close-up\n2. User reaction\n3. Final CTA frame\n\nCaption idea:\nGrab attention before people can move on.\n\nCTA:\nDM us for details.",
++                    "reply": "Title:\nThe DM Mistake Reel\n\n1-second hook:\nYour Reels do not fail because of views. They fail because the CTA arrives too late.\n\nFormat type:\nTalking-head diagnosis with proof screenshots\n\nTrend or pattern used:\nProblem-first hook with fast proof in the second beat\n\nNiche adaptation:\nUse lead-generation examples from the user's current service niche and show a weak DM CTA versus a stronger one.\n\nMain idea:\nBreak down one CTA mistake that kills qualified DMs, then show the exact fix in one sentence.\n\nShot list:\n1. Direct-to-camera hook\n2. Screenshot of weak CTA\n3. Screenshot of stronger CTA\n4. Final direct CTA\n\nWhy it can work:\nIt uses a fast tension hook, gives proof quickly, and converts a common hidden mistake into a saveable teaching moment.\n\nCTA:\nDM me 'CTA' and I will rewrite your Reel CTA.",
+                     "account_id": "test-account-3",
+                     "task_type": "reel_idea",
+                     "parse_status": "parsed",
+                     "structured_output": {
+                         "ideas": [
+                             {
+-                                "title": "Open with a fast emotional product moment",
+-                                "hook": "Stop the scroll in the first 2 seconds.",
+-                                "main_idea": "Open with a fast emotional product moment and connect it to the audience's everyday problem.",
++                                "title": "The DM Mistake Reel",
++                                "hook": "Your Reels do not fail because of views. They fail because the CTA arrives too late.",
++                                "format_type": "Talking-head diagnosis with proof screenshots",
++                                "trend_or_pattern_used": "Problem-first hook with fast proof in the second beat",
++                                "niche_adaptation": "Use lead-generation examples from the user's current service niche and show a weak DM CTA versus a stronger one.",
++                                "main_idea": "Break down one CTA mistake that kills qualified DMs, then show the exact fix in one sentence.",
+                                 "shot_list": [
+-                                    "Product close-up",
+-                                    "User reaction",
+-                                    "Final CTA frame",
++                                    "Direct-to-camera hook",
++                                    "Screenshot of weak CTA",
++                                    "Screenshot of stronger CTA",
++                                    "Final direct CTA",
+                                 ],
+-                                "caption_idea": "Grab attention before people can move on.",
+-                                "cta": "DM us for details.",
++                                "why_it_can_work": "It uses a fast tension hook, gives proof quickly, and converts a common hidden mistake into a saveable teaching moment.",
++                                "cta": "DM me 'CTA' and I will rewrite your Reel CTA.",
+                             }
+                         ]
+                     },
+@@ -574,9 +581,12 @@
+         coerced_idea = {
+             "title": _coerce_text(raw_idea.get("title")),
+             "hook": _coerce_text(raw_idea.get("hook")),
++            "format_type": _coerce_text(raw_idea.get("format_type")),
++            "trend_or_pattern_used": _coerce_text(raw_idea.get("trend_or_pattern_used")),
++            "niche_adaptation": _coerce_block_text(raw_idea.get("niche_adaptation")),
+             "main_idea": _coerce_text(raw_idea.get("main_idea")),
+             "shot_list": _coerce_string_list(raw_idea.get("shot_list")),
+-            "caption_idea": _coerce_text(raw_idea.get("caption_idea")),
++            "why_it_can_work": _coerce_block_text(raw_idea.get("why_it_can_work")),
+             "cta": _coerce_text(raw_idea.get("cta")),
+         }
+         if coerced_idea != raw_idea:
+--- C:\Users\Greench Pc\AppData\Local\Temp\reels_quality_fix_backups\agent_response_formatter_service.py.bak
++++ backend/app/services/agent_response_formatter_service.py
+@@ -10,12 +10,17 @@
+ 
+ class AgentResponseFormatterService:
+     def __init__(self):
++        self._structured_output_marker = "STRUCTURED_OUTPUT_JSON:"
+         self._task_sections = {
+             "reel_idea": [
+-                "Hook:",
++                "Title:",
++                "1-second hook:",
++                "Format type:",
++                "Trend or pattern used:",
++                "Niche adaptation:",
+                 "Main idea:",
+                 "Shot list:",
+-                "Caption idea:",
++                "Why it can work:",
+                 "CTA:",
+             ],
+             "reel_script": [
+@@ -89,29 +94,43 @@
+             }
+ 
+         try:
+-            formatted_reply, cleanup_applied = self.format_reply(task_type, reply)
+-            parsed_structured_output, parsed_status = self._parse_task_output(
++            reply_without_embedded_json, embedded_structured_output, extraction_applied = self._extract_embedded_structured_output(
+                 task_type,
+-                formatted_reply or reply,
++                reply,
+             )
++            formatted_reply, cleanup_applied = self.format_reply(task_type, reply_without_embedded_json)
++            parse_source = formatted_reply or reply_without_embedded_json or reply
++            parsed_structured_output = embedded_structured_output
++            parsed_status = "parsed" if embedded_structured_output is not None else "raw_only"
++
++            if parsed_structured_output is None:
++                parsed_structured_output, parsed_status = self._parse_task_output(task_type, parse_source)
++
+             structured_output, parse_status, schema_applied = validate_structured_output_payload(
+                 task_type,
+                 parsed_status,
+                 parsed_structured_output,
+             )
++            if embedded_structured_output is not None and structured_output is None:
++                parsed_structured_output, parsed_status = self._parse_task_output(task_type, parse_source)
++                structured_output, parse_status, schema_applied = validate_structured_output_payload(
++                    task_type,
++                    parsed_status,
++                    parsed_structured_output,
++                )
+             logger.info(
+                 "Normalized agent reply task_type=%s cleanup_applied=%s parsed_status_before_validation=%s parse_status=%s schema_applied=%s",
+                 task_type,
+-                cleanup_applied,
++                cleanup_applied or extraction_applied,
+                 parsed_status,
+                 parse_status,
+                 schema_applied or "none",
+             )
+             return {
+-                "reply": formatted_reply or reply,
++                "reply": formatted_reply or reply_without_embedded_json or reply,
+                 "parse_status": parse_status,
+                 "structured_output": structured_output,
+-                "cleanup_applied": cleanup_applied,
++                "cleanup_applied": cleanup_applied or extraction_applied,
+                 "schema_applied": schema_applied,
+             }
+         except Exception as exc:
+@@ -128,6 +147,44 @@
+                 "schema_applied": None,
+             }
+ 
++    def _extract_embedded_structured_output(self, task_type: str, reply: str) -> tuple[str, dict | None, bool]:
++        if task_type not in {"reel_idea", "reel_script", "reel_feedback"}:
++            return reply, None, False
++
++        marker_index = reply.rfind(self._structured_output_marker)
++        if marker_index < 0:
++            return reply, None, False
++
++        candidate_reply = reply[:marker_index].rstrip()
++        candidate_payload = reply[marker_index + len(self._structured_output_marker):].strip()
++        extracted_payload = self._parse_embedded_json_object(candidate_payload)
++        if not isinstance(extracted_payload, dict):
++            return reply, None, False
++
++        return candidate_reply or reply, extracted_payload, True
++
++    def _parse_embedded_json_object(self, value: str) -> dict | None:
++        candidate = value.strip()
++        if candidate.startswith("```"):
++            candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE)
++            candidate = re.sub(r"\s*```$", "", candidate).strip()
++
++        first_brace_index = candidate.find("{")
++        if first_brace_index < 0:
++            return None
++
++        candidate = candidate[first_brace_index:]
++        try:
++            parsed_value, end_index = json.JSONDecoder().raw_decode(candidate)
++        except json.JSONDecodeError:
++            return None
++
++        trailing_text = candidate[end_index:].strip()
++        if trailing_text and trailing_text != "```":
++            return None
++
++        return parsed_value if isinstance(parsed_value, dict) else None
++
+     def format_reply(self, task_type: str, reply: str | None) -> tuple[str | None, bool]:
+         if reply is None:
+             return None, False
+@@ -178,7 +235,7 @@
+ 
+     def _insert_line_breaks_before_headings(self, text: str, headings: list[str]) -> str:
+         prepared_text = text
+-        for heading in headings:
++        for heading in sorted(headings, key=len, reverse=True):
+             escaped_heading = re.escape(heading)
+             prepared_text = re.sub(
+                 rf"(?<!^)(?<!\n)\s*(\*\*{escaped_heading}\*\*|{escaped_heading})",
+@@ -268,7 +325,7 @@
+ 
+     def _build_heading_pattern(self, headings: list[str]) -> re.Pattern[str]:
+         variants = []
+-        for heading in headings:
++        for heading in sorted(headings, key=len, reverse=True):
+             escaped_heading = re.escape(heading)
+             variants.append(rf"\*\*{escaped_heading}\*\*")
+             variants.append(escaped_heading)
+@@ -345,6 +402,31 @@
+         else:
+             result = " ".join(line for line in cleaned_lines if line).strip()
+         return result or None
++
++    def _clean_reel_idea_field_text(
++        self,
++        value: str | None,
++        *,
++        preserve_newlines: bool = False,
++        strip_numbering: bool = False,
++    ) -> str | None:
++        if value is None:
++            return None
++
++        cleaned_lines = []
++        for raw_line in str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n"):
++            normalized_line = raw_line.strip()
++            if re.fullmatch(r"(?:#{1,6}\s*)?reel\s+\d+\s*:?", normalized_line, flags=re.IGNORECASE):
++                continue
++            if re.fullmatch(r"(?:#{1,6}\s*)?summary\s*:?", normalized_line, flags=re.IGNORECASE):
++                continue
++            cleaned_lines.append(raw_line)
++
++        return self._clean_value_text(
++            "\n".join(cleaned_lines),
++            preserve_newlines=preserve_newlines,
++            strip_numbering=strip_numbering,
++        )
+ 
+     def _normalize_section_body(self, body: str, headings: list[str] | None = None) -> str:
+         normalized_body = body.strip()
+@@ -492,45 +574,59 @@
+ 
+     def _parse_reel_ideas(self, text: str) -> tuple[dict | None, str]:
+         headings = self._task_sections["reel_idea"]
+-        preamble, sections = self._extract_sections(text, headings)
++        _, sections = self._extract_sections(text, headings)
+         if not sections:
+             return None, "raw_only"
+ 
+         ideas = []
+         current_idea = {}
+         idea_index = 1
+-        title_hint = preamble
+ 
+         for section in sections:
+             heading = section["heading"]
+             body = section["body"]
+ 
+-            if heading == "Hook:":
++            if heading == "Title:":
+                 if current_idea:
+-                    ideas.append(self._finalize_reel_idea(current_idea, idea_index, title_hint))
++                    ideas.append(self._finalize_reel_idea(current_idea, idea_index))
+                     idea_index += 1
+-                    title_hint = None
++                    current_idea = {}
++                current_idea["title"] = body or None
++                continue
++
++            if heading == "1-second hook:":
++                if current_idea.get("hook"):
++                    ideas.append(self._finalize_reel_idea(current_idea, idea_index))
++                    idea_index += 1
+                     current_idea = {}
+                 current_idea["hook"] = body or None
+-                continue
+-
+-            if heading == "Main idea:":
++            elif heading == "Format type:":
++                current_idea["format_type"] = body or None
++            elif heading == "Trend or pattern used:":
++                current_idea["trend_or_pattern_used"] = body or None
++            elif heading == "Niche adaptation:":
++                current_idea["niche_adaptation"] = body or None
++            elif heading == "Main idea:":
+                 current_idea["main_idea"] = body or None
+             elif heading == "Shot list:":
+                 current_idea["shot_list"] = self._split_listish_text(body)
+-            elif heading == "Caption idea:":
+-                current_idea["caption_idea"] = body or None
++            elif heading == "Why it can work:":
++                current_idea["why_it_can_work"] = body or None
+             elif heading == "CTA:":
+                 current_idea["cta"] = body or None
+ 
+         if current_idea:
+-            ideas.append(self._finalize_reel_idea(current_idea, idea_index, title_hint))
++            ideas.append(self._finalize_reel_idea(current_idea, idea_index))
+ 
+         ideas = [idea for idea in ideas if any([
++            idea.get("title"),
+             idea.get("hook"),
++            idea.get("format_type"),
++            idea.get("trend_or_pattern_used"),
++            idea.get("niche_adaptation"),
+             idea.get("main_idea"),
+             idea.get("shot_list"),
+-            idea.get("caption_idea"),
++            idea.get("why_it_can_work"),
+             idea.get("cta"),
+         ])]
+         if not ideas:
+@@ -539,27 +635,38 @@
+         fully_parsed = all(self._is_complete_reel_idea(idea) for idea in ideas)
+         return {"ideas": ideas}, "parsed" if fully_parsed else "partial"
+ 
+-    def _finalize_reel_idea(self, idea: dict, index: int, title_hint: str | None) -> dict:
+-        main_idea = self._clean_value_text(idea.get("main_idea"))
+-        hook = self._clean_value_text(idea.get("hook"))
+-        caption_idea = self._clean_value_text(idea.get("caption_idea"))
+-        cta = self._clean_value_text(idea.get("cta"))
++    def _finalize_reel_idea(self, idea: dict, index: int) -> dict:
++        title = self._clean_reel_idea_field_text(idea.get("title"))
++        hook = self._clean_reel_idea_field_text(idea.get("hook"))
++        format_type = self._clean_reel_idea_field_text(idea.get("format_type"))
++        trend_or_pattern_used = self._clean_reel_idea_field_text(idea.get("trend_or_pattern_used"))
++        niche_adaptation = self._clean_reel_idea_field_text(idea.get("niche_adaptation"), preserve_newlines=True)
++        main_idea = self._clean_reel_idea_field_text(idea.get("main_idea"), preserve_newlines=True)
++        why_it_can_work = self._clean_reel_idea_field_text(idea.get("why_it_can_work"), preserve_newlines=True)
++        cta = self._clean_reel_idea_field_text(idea.get("cta"))
+         shot_list = [item for item in (self._split_listish_text("\n".join(idea.get("shot_list") or [])) if idea.get("shot_list") else []) if item]
+         return {
+-            "title": self._derive_title(self._clean_value_text(title_hint) or main_idea or hook, f"Idea {index}"),
++            "title": title or self._derive_title(main_idea or hook, f"Idea {index}"),
+             "hook": hook,
++            "format_type": format_type,
++            "trend_or_pattern_used": trend_or_pattern_used,
++            "niche_adaptation": niche_adaptation,
+             "main_idea": main_idea,
+             "shot_list": shot_list,
+-            "caption_idea": caption_idea,
++            "why_it_can_work": why_it_can_work,
+             "cta": cta,
+         }
+ 
+     def _is_complete_reel_idea(self, idea: dict) -> bool:
+         return all([
++            idea.get("title"),
+             idea.get("hook"),
++            idea.get("format_type"),
++            idea.get("trend_or_pattern_used"),
++            idea.get("niche_adaptation"),
+             idea.get("main_idea"),
+             idea.get("shot_list"),
+-            idea.get("caption_idea"),
++            idea.get("why_it_can_work"),
+             idea.get("cta"),
+         ])
+ 
+--- C:\Users\Greench Pc\AppData\Local\Temp\reels_quality_fix_backups\langflow_service.py.bak
++++ backend/app/services/langflow_service.py
+@@ -33,8 +33,8 @@
+ 
+     def _task_instruction(self, task_type: str) -> str:
+         instructions = {
+-            "reel_idea": "Generate original Instagram reel ideas. If a source link is provided, extract the pattern and adapt it instead of copying it.",
+-            "reel_script": "Generate original Instagram reel scripts that are ready to record. If a source link is provided, use it as inspiration and rewrite the pattern for the user's goal.",
++            "reel_idea": "Generate original, execution-ready Instagram Reel ideas that feel specific to the user's niche, goal, and current account context. Use trend logic and hook mechanics strategically instead of giving generic topic suggestions.",
++            "reel_script": "Generate a concrete Instagram Reel script that is ready to record, with strong first-second tension, clear scene flow, retention logic, and a direct CTA adapted to the user's goal.",
+             "reel_feedback": "Review the target Reel, explain what works and what weakens performance, identify likely retention drop reasons, and provide a clearly improved version. If specific Reel context is provided, analyze that exact Reel without inventing missing metrics.",
+             "caption": "Generate a clear Instagram caption that matches the user's goal, brand voice, and current Instagram context. Make it usable as-is, not just conceptual.",
+             "carousel": "Generate clear Instagram carousel copy that teaches, persuades, or converts. If a source link is provided, adapt the angle and structure without copying.",
+@@ -69,10 +69,14 @@
+     def _output_format_instruction(self, task_type: str) -> str:
+         formats = {
+             "reel_idea": "\n".join([
+-                "Hook:",
++                "Title:",
++                "1-second hook:",
++                "Format type:",
++                "Trend or pattern used:",
++                "Niche adaptation:",
+                 "Main idea:",
+                 "Shot list:",
+-                "Caption idea:",
++                "Why it can work:",
+                 "CTA:",
+             ]),
+             "reel_script": "\n".join([
+@@ -138,6 +142,62 @@
+             ]),
+         }
+         return formats.get(task_type, "Use a structured Instagram strategy format.")
++
++    def _reels_high_priority_instruction(self, task_type: str, playbook_context: dict | None) -> str | None:
++        if task_type not in {"reel_idea", "reel_script", "reel_feedback"}:
++            return None
++
++        lines = [
++            "High-priority reels methodology rules:",
++            "Use the internal reels playbook as a primary strategic guide when it is available.",
++            "Do not give generic filler or vague advice. Translate strategy into concrete execution.",
++            "Reflect Mariami-style methodology through hook logic, trend adaptation, simplicity, visual execution, retention design, and a single clear CTA.",
++            "Never output raw playbook text or mention hidden internal knowledge explicitly.",
++        ]
++
++        task_specific_lines = {
++            "reel_idea": [
++                "For reel_idea, deliver concrete Reel concepts instead of broad topics.",
++                "Each idea must include a clean title, a 1-second hook, a concrete format type, a trend or pattern adaptation, a niche adaptation, a main idea, a shot list, a reason it can work, and a direct CTA.",
++                "Prefer concrete formats such as talking-head diagnosis, proof-led tutorial, comment-reply Reel, objection breakdown, screen-record plus voiceover, or myth-versus-reality when they fit the context.",
++                "If you mention a trend or pattern, explain how to adapt it to the user's niche instead of naming it vaguely.",
++            ],
++            "reel_script": [
++                "For reel_script, prioritize first-second tension, scene-by-scene retention, and a CTA that matches the business goal.",
++                "Write the script so it could be recorded immediately with minimal interpretation.",
++            ],
++            "reel_feedback": [
++                "For reel_feedback, diagnose the hook, structure, clarity, retention risk, and CTA before proposing the improved version.",
++                "The improved version must be meaningfully stronger, not just lightly reworded.",
++            ],
++        }
++        lines.extend(task_specific_lines.get(task_type, []))
++
++        if not playbook_context or not playbook_context.get("used_system_knowledge"):
++            lines.append("No internal reels playbook chunks were retrieved for this request, so fall back safely to the available account context and general Reel strategy best practices.")
++
++        return "\n".join(lines)
++
++    def _reels_structured_output_contract(self, task_type: str) -> str | None:
++        contracts = {
++            "reel_idea": [
++                "After the human-readable answer, append exactly one final line that starts with STRUCTURED_OUTPUT_JSON: followed by a single valid JSON object.",
++                "Do not use markdown code fences around the JSON.",
++                'The JSON must match this shape: {"ideas":[{"title":"...","hook":"...","format_type":"...","trend_or_pattern_used":"...","niche_adaptation":"...","main_idea":"...","shot_list":["..."],"why_it_can_work":"...","cta":"..."}]}',
++            ],
++            "reel_script": [
++                "After the human-readable answer, append exactly one final line that starts with STRUCTURED_OUTPUT_JSON: followed by a single valid JSON object.",
++                "Do not use markdown code fences around the JSON.",
++                'The JSON must match this shape: {"title":"...","hook":"...","script_sections":["..."],"cta":"...","full_script":"..."}',
++            ],
++            "reel_feedback": [
++                "After the human-readable answer, append exactly one final line that starts with STRUCTURED_OUTPUT_JSON: followed by a single valid JSON object.",
++                "Do not use markdown code fences around the JSON.",
++                'The JSON must match this shape: {"what_works":["..."],"what_hurts":["..."],"retention_risks":["..."],"better_hook":"...","improved_structure":["..."],"better_cta":"...","improved_version":"...","summary":"..."}',
++            ],
++        }
++        contract_lines = contracts.get(task_type)
++        return "\n".join(contract_lines) if contract_lines else None
+ 
+     def _context_notice(
+         self,
+@@ -204,12 +264,13 @@
+         domain = str(playbook_context.get("matched_knowledge_domain") or "strategy").strip()
+         lines = [
+             f"Internal {domain} strategy context:",
+-            "Use the following expert strategic guidance when it is relevant:",
++            "Use the following expert strategic guidance with high priority when it is relevant:",
+         ]
+ 
+         for index, chunk in enumerate(playbook_context.get("chunks", []), start=1):
++            chunk_label = chunk.get("chunk_label") or chunk.get("file_name", "source")
+             lines.append(
+-                f"Playbook chunk {index} ({chunk.get('file_name', 'source')}): {chunk.get('text', '')}"
++                f"Playbook chunk {index} [{chunk_label}]: {chunk.get('text', '')}"
+             )
+ 
+         return "\n".join(lines)
+@@ -345,14 +406,31 @@
+         playbook_context: dict | None = None,
+         reel_context: dict | None = None,
+     ) -> str:
++        reels_high_priority_instruction = self._reels_high_priority_instruction(task_type, playbook_context)
++        reels_structured_output_contract = self._reels_structured_output_contract(task_type)
+         parts = [
+             "SYSTEM ROLE AND RULES:",
+             self._base_system_instruction(),
+             "",
+             f"Task type: {task_type}",
+             f"Task objective: {self._task_instruction(task_type)}",
++        ]
++
++        if reels_high_priority_instruction:
++            parts.extend([
++                reels_high_priority_instruction,
++                self._format_playbook_context(playbook_context),
++            ])
++
++        parts.extend([
+             "Required output format:",
+             self._output_format_instruction(task_type),
++        ])
++
++        if reels_structured_output_contract:
++            parts.append(reels_structured_output_contract)
++
++        parts.extend([
+             self._priority_rules(
+                 niche=niche,
+                 target_audience=target_audience,
+@@ -373,10 +451,12 @@
+             self._format_recent_posts_context(recent_posts_context),
+             self._format_link_context(link_context),
+             self._format_recent_content_context(recent_content_context),
+-            self._format_playbook_context(playbook_context),
+             self._format_reel_context(reel_context),
+             f"User request: {message}",
+-        ]
++        ])
++
++        if not reels_high_priority_instruction:
++            parts.append(self._format_playbook_context(playbook_context))
+ 
+         if niche:
+             parts.append(f"Requested niche override: {niche}")
+--- C:\Users\Greench Pc\AppData\Local\Temp\reels_quality_fix_backups\knowledge_pack_service.py.bak
++++ backend/app/services/knowledge_pack_service.py
+@@ -99,15 +99,47 @@
+         "áƒ›áƒ”áƒ¢áƒ˜",
+     }
+     TASK_KEYWORDS = {
+-        "reel_idea": ["reel", "hook", "cta", "idea", "shot", "angle"],
+-        "reel_script": ["reel", "script", "hook", "scene", "cta", "angle"],
+-        "reel_feedback": ["reel", "feedback", "review", "retention", "hook", "cta", "improve"],
++        "reel_idea": [
++            "reel ideas",
++            "viral idea mechanics",
++            "trend adaptation",
++            "hook",
++            "format library",
++            "simplicity",
++            "first seconds",
++            "retention",
++        ],
++        "reel_script": [
++            "reel structure",
++            "hook",
++            "shot list",
++            "retention",
++            "cta",
++            "narrative flow",
++            "scene pacing",
++            "visual proof",
++        ],
++        "reel_feedback": [
++            "hook diagnosis",
++            "retention",
++            "structure",
++            "clarity",
++            "cta",
++            "improvement framework",
++            "diagnosis",
++            "rewrite",
++        ],
+         "caption": ["caption", "hook", "cta", "body", "conversion"],
+         "carousel": ["carousel", "slide", "headline", "cta", "framework"],
+         "profile_audit": ["profile", "bio", "audit", "positioning", "cta"],
+         "content_plan": ["plan", "calendar", "content", "topic", "goal", "format"],
+         "link_analysis": ["analysis", "adapt", "pattern", "cta", "hook"],
+         "performance_summary": ["performance", "summary", "patterns", "worked", "cta"],
++    }
++    REELS_TOP_K_BY_TASK = {
++        "reel_idea": 6,
++        "reel_script": 6,
++        "reel_feedback": 6,
+     }
+ 
+     def __init__(
+@@ -188,6 +220,14 @@
+         normalized_text = re.sub(r"[ \t]+", " ", normalized_text)
+         normalized_text = re.sub(r"\n{3,}", "\n\n", normalized_text)
+         return normalized_text.strip()
++
++    def _extract_chunk_label(self, text: str) -> str | None:
++        for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
++            line = re.sub(r"^[#>*\-\d.\s]+", "", raw_line).strip(" :-\t")
++            if not line:
++                continue
++            return line[:120].rstrip()
++        return None
+ 
+     def _extract_text_from_txt(self, content: bytes) -> str:
+         return self._clean_extracted_text(content.decode("utf-8", errors="ignore"))
+@@ -516,6 +556,7 @@
+                     "file_id": file_id,
+                     "file_name": file_name,
+                     "chunk_index": chunk_index,
++                    "chunk_label": self._extract_chunk_label(chunk_text),
+                     "text": chunk_text,
+                 })
+ 
+@@ -756,7 +797,7 @@
+ 
+         return "\n".join(part for part in parts if part)
+ 
+-    def _score_chunk(self, query_counter: Counter, query_tokens: list[str], chunk_text: str) -> float:
++    def _score_chunk(self, query_counter: Counter, query_tokens: list[str], chunk_text: str, *, task_type: str) -> float:
+         chunk_tokens = self._tokenize(chunk_text)
+         if not chunk_tokens:
+             return 0.0
+@@ -773,7 +814,13 @@
+             if len(token) >= 6 and token in normalized_chunk_text:
+                 phrase_bonus += 0.15
+ 
+-        return overlap_score + phrase_bonus
++        task_bonus = 0.0
++        for keyword in self.TASK_KEYWORDS.get(task_type, []):
++            normalized_keyword = keyword.lower()
++            if normalized_keyword in normalized_chunk_text:
++                task_bonus += 0.3 if " " in normalized_keyword else 0.1
++
++        return overlap_score + phrase_bonus + task_bonus
+ 
+     def _select_top_chunks(
+         self,
+@@ -781,6 +828,7 @@
+         candidate_packs: list[dict],
+         query_tokens: list[str],
+         top_k: int,
++        task_type: str,
+     ) -> tuple[list[dict], list[str]]:
+         if not candidate_packs or not query_tokens:
+             return [], []
+@@ -792,13 +840,14 @@
+             pack_id = str(pack.get("knowledge_pack_id") or "")
+             for chunk in all_chunks.get(pack_id, []):
+                 chunk_text = str(chunk.get("text") or "")
+-                score = self._score_chunk(query_counter, query_tokens, chunk_text)
++                score = self._score_chunk(query_counter, query_tokens, chunk_text, task_type=task_type)
+                 if score <= 0:
+                     continue
+                 scored_chunks.append((
+                     score,
+                     {
+                         **chunk,
++                        "chunk_label": chunk.get("chunk_label") or self._extract_chunk_label(chunk_text),
+                         "scope": pack.get("scope"),
+                         "domain": pack.get("domain"),
+                         "visibility": pack.get("visibility"),
+@@ -861,6 +910,7 @@
+             candidate_packs=[active_pack],
+             query_tokens=query_tokens,
+             top_k=top_k,
++            task_type=task_type,
+         )
+         return {
+             "used_knowledge_pack": bool(selected_chunks),
+@@ -890,6 +940,7 @@
+                 "matched_knowledge_domain": None,
+                 "matched_knowledge_pack_ids": [],
+                 "retrieved_chunk_count": 0,
++                "retrieved_chunk_titles": [],
+                 "chunks": [],
+             }
+ 
+@@ -902,22 +953,30 @@
+             recent_posts_context=recent_posts_context,
+         )
+         query_tokens = self._tokenize(query_text)
++        resolved_top_k = max(top_k, self.REELS_TOP_K_BY_TASK.get(task_type, top_k))
+         selected_chunks, matched_pack_ids = self._select_top_chunks(
+             candidate_packs=candidate_packs,
+             query_tokens=query_tokens,
+-            top_k=top_k,
+-        )
++            top_k=resolved_top_k,
++            task_type=task_type,
++        )
++        retrieved_chunk_titles = [
++            str(chunk.get("chunk_label") or chunk.get("file_name") or f"Chunk {index}")
++            for index, chunk in enumerate(selected_chunks, start=1)
++        ]
+         logger.info(
+-            "Retrieved system knowledge chunks domain=%s task_type=%s matched_packs=%s chunks=%s",
++            "Retrieved system knowledge chunks domain=%s task_type=%s matched_packs=%s chunks=%s labels=%s",
+             domain,
+             task_type,
+             ",".join(matched_pack_ids) if matched_pack_ids else "none",
+             len(selected_chunks),
++            " | ".join(retrieved_chunk_titles[:5]) if retrieved_chunk_titles else "none",
+         )
+         return {
+             "used_system_knowledge": bool(selected_chunks),
+             "matched_knowledge_domain": domain if selected_chunks else None,
+             "matched_knowledge_pack_ids": matched_pack_ids,
+             "retrieved_chunk_count": len(selected_chunks),
++            "retrieved_chunk_titles": retrieved_chunk_titles,
+             "chunks": selected_chunks,
+         }
+--- C:\Users\Greench Pc\AppData\Local\Temp\reels_quality_fix_backups\agent_route.py.bak
++++ backend/app/api/routes/agent.py
+@@ -256,6 +256,8 @@
+     matched_knowledge_domain: str | None = None,
+     matched_knowledge_pack_ids: list[str] | None = None,
+     retrieved_chunk_count: int | None = None,
++    retrieved_chunk_titles: list[str] | None = None,
++    parse_status: str | None = None,
+ ) -> None:
+     try:
+         generation_history_service.save_item({
+@@ -280,6 +282,8 @@
+             "matched_knowledge_domain": matched_knowledge_domain,
+             "matched_knowledge_pack_ids": list(matched_knowledge_pack_ids or []),
+             "retrieved_chunk_count": retrieved_chunk_count,
++            "retrieved_chunk_titles": list(retrieved_chunk_titles or []),
++            "parse_status": parse_status,
+         })
+     except Exception:
+         pass
+@@ -440,6 +444,7 @@
+     matched_knowledge_domain: str | None = None
+     matched_knowledge_pack_ids: list[str] = []
+     retrieved_chunk_count = 0
++    retrieved_chunk_titles: list[str] = []
+ 
+     try:
+         if payload.user_id:
+@@ -533,6 +538,7 @@
+                 matched_knowledge_domain = playbook_context.get("matched_knowledge_domain")
+                 matched_knowledge_pack_ids = list(playbook_context.get("matched_knowledge_pack_ids") or [])
+                 retrieved_chunk_count = int(playbook_context.get("retrieved_chunk_count") or 0)
++                retrieved_chunk_titles = list(playbook_context.get("retrieved_chunk_titles") or [])
+             except Exception as exc:
+                 logger.warning(
+                     "System knowledge retrieval failed user_id=%s account_id=%s task_type=%s error=%s",
+@@ -592,6 +598,7 @@
+             matched_knowledge_domain=matched_knowledge_domain,
+             matched_knowledge_pack_ids=matched_knowledge_pack_ids,
+             retrieved_chunk_count=retrieved_chunk_count,
++            retrieved_chunk_titles=retrieved_chunk_titles,
+         )
+         raise
+     except RuntimeError as exc:
+@@ -618,6 +625,7 @@
+             matched_knowledge_domain=matched_knowledge_domain,
+             matched_knowledge_pack_ids=matched_knowledge_pack_ids,
+             retrieved_chunk_count=retrieved_chunk_count,
++            retrieved_chunk_titles=retrieved_chunk_titles,
+         )
+         if str(exc) == "Langflow request timed out":
+             raise HTTPException(status_code=504, detail=str(exc)) from exc
+@@ -644,6 +652,8 @@
+         matched_knowledge_domain=matched_knowledge_domain,
+         matched_knowledge_pack_ids=matched_knowledge_pack_ids,
+         retrieved_chunk_count=retrieved_chunk_count,
++        retrieved_chunk_titles=retrieved_chunk_titles,
++        parse_status=result.get("parse_status"),
+     )
+ 
+     return AgentChatResponse(
+--- C:\Users\Greench Pc\AppData\Local\Temp\reels_quality_fix_backups\generation_history_service.py.bak
++++ backend/app/services/generation_history_service.py
+@@ -74,6 +74,33 @@
+ 
+         return item
+ 
++    def list_items(self) -> list[dict]:
++        return list(self._load_items())
++
++    def get_latest_item(
++        self,
++        *,
++        user_id: str | None = None,
++        task_type: str | None = None,
++        account_id: str | None = None,
++    ) -> dict | None:
++        items = self._load_items()
++        filtered_items = []
++        for item in items:
++            if user_id and item.get("user_id") != user_id:
++                continue
++            if task_type and item.get("task_type") != task_type:
++                continue
++            if account_id and item.get("account_id") != account_id:
++                continue
++            filtered_items.append(item)
++
++        if not filtered_items:
++            return None
++
++        filtered_items.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
++        return filtered_items[0]
++
+     def get_history_by_user(self, user_id: str) -> list[dict]:
+         items = self._load_items()
+         filtered_items = [item for item in items if item.get("user_id") == user_id]
+--- C:\Users\Greench Pc\AppData\Local\Temp\reels_quality_fix_backups\main.py.bak
++++ backend/app/main.py
+@@ -7,6 +7,7 @@
+ from app.api.routes.app_bootstrap import router as app_bootstrap_router
+ from app.api.routes.billing import router as billing_router
+ from app.api.routes.generation_history import router as generation_history_router
++from app.api.routes.internal_generation_debug import router as internal_generation_debug_router
+ from app.api.routes.knowledge_packs import router as knowledge_packs_router
+ from app.api.routes.maintenance import router as maintenance_router
+ from app.api.routes.instagram_connection import router as instagram_connection_router
+@@ -35,6 +36,7 @@
+ app.include_router(billing_router)
+ app.include_router(connected_accounts_router)
+ app.include_router(generation_history_router)
++app.include_router(internal_generation_debug_router)
+ app.include_router(knowledge_packs_router)
+ app.include_router(maintenance_router)
+ app.include_router(instagram_connection_router)
+--- a/dev/null
++++ backend\app\schemas\internal_generation_debug.py
+@@ -0,0 +1,35 @@
++from pydantic import BaseModel, ConfigDict, Field
++
++
++class InternalGenerationDebugResponse(BaseModel):
++    model_config = ConfigDict(
++        extra="forbid",
++        json_schema_extra={
++            "example": {
++                "user_id": "user-1",
++                "task_type": "reel_idea",
++                "account_id": "acct-1",
++                "used_system_knowledge": True,
++                "matched_knowledge_domain": "reels",
++                "matched_knowledge_pack_ids": ["kp_123abc456def"],
++                "retrieved_chunk_count": 4,
++                "retrieved_chunk_titles": [
++                    "KNOWLEDGE MODULE 1 VIRAL IDEA MECHANICS",
++                    "KNOWLEDGE MODULE 2 TREND STRUCTURE",
++                ],
++                "parse_status": "parsed",
++                "created_at": "2026-04-27T12:30:00+00:00",
++            }
++        },
++    )
++
++    user_id: str | None = None
++    task_type: str
++    account_id: str | None = None
++    used_system_knowledge: bool | None = None
++    matched_knowledge_domain: str | None = None
++    matched_knowledge_pack_ids: list[str] = Field(default_factory=list)
++    retrieved_chunk_count: int = 0
++    retrieved_chunk_titles: list[str] = Field(default_factory=list)
++    parse_status: str | None = None
++    created_at: str
+--- a/dev/null
++++ backend\app\api\routes\internal_generation_debug.py
+@@ -0,0 +1,40 @@
++from fastapi import APIRouter, HTTPException, Request
++
++from app.api.routes.knowledge_packs import _require_internal_admin_access
++from app.schemas.api_error import STANDARD_ERROR_RESPONSES
++from app.schemas.internal_generation_debug import InternalGenerationDebugResponse
++from app.services.generation_history_service import GenerationHistoryService
++
++router = APIRouter(prefix="/api/v1/internal/generation-debug", tags=["internal-generation-debug"])
++
++generation_history_service = GenerationHistoryService()
++
++
++@router.get("/latest", response_model=InternalGenerationDebugResponse, responses=STANDARD_ERROR_RESPONSES, include_in_schema=False)
++def get_latest_generation_debug(
++    request: Request,
++    user_id: str | None = None,
++    task_type: str | None = None,
++    account_id: str | None = None,
++):
++    _require_internal_admin_access(request)
++    item = generation_history_service.get_latest_item(
++        user_id=user_id,
++        task_type=task_type,
++        account_id=account_id,
++    )
++    if not item:
++        raise HTTPException(status_code=404, detail="Generation metadata was not found")
++
++    return {
++        "user_id": item.get("user_id"),
++        "task_type": item.get("task_type"),
++        "account_id": item.get("account_id"),
++        "used_system_knowledge": item.get("used_system_knowledge"),
++        "matched_knowledge_domain": item.get("matched_knowledge_domain"),
++        "matched_knowledge_pack_ids": list(item.get("matched_knowledge_pack_ids") or []),
++        "retrieved_chunk_count": int(item.get("retrieved_chunk_count") or 0),
++        "retrieved_chunk_titles": list(item.get("retrieved_chunk_titles") or []),
++        "parse_status": item.get("parse_status"),
++        "created_at": item.get("timestamp"),
++    }
+--- a/dev/null
++++ backend\tests\test_reels_quality_contract.py
+@@ -0,0 +1,386 @@
++import json
++import sys
++from pathlib import Path
++
++from fastapi.testclient import TestClient
++
++
++PROJECT_ROOT = Path(__file__).resolve().parents[1]
++if str(PROJECT_ROOT) not in sys.path:
++    sys.path.insert(0, str(PROJECT_ROOT))
++
++from app.main import app  # noqa: E402
++from app.api.routes import agent as agent_route  # noqa: E402
++from app.api.routes import internal_generation_debug as internal_generation_debug_route  # noqa: E402
++from app.api.routes import knowledge_packs as knowledge_pack_route  # noqa: E402
++from app.services.agent_response_formatter_service import AgentResponseFormatterService  # noqa: E402
++from app.services.generation_history_service import GenerationHistoryService  # noqa: E402
++from app.services.knowledge_pack_service import KnowledgePackService  # noqa: E402
++from app.services.langflow_service import LangflowService  # noqa: E402
++
++
++INTERNAL_HEADERS = {"X-Internal-Admin-Key": "test-internal-key"}
++
++
++def _build_reel_idea_reply() -> str:
++    structured_output = {
++        "ideas": [
++            {
++                "title": "CTA Audit Reel",
++                "hook": "თუ ხალხი გიყურებს, მაგრამ არ გწერს, პრობლემა ხშირად CTA-შია.",
++                "format_type": "Talking-head diagnosis with proof screenshots",
++                "trend_or_pattern_used": "Problem-first hook adapted from short expert breakdown Reels",
++                "niche_adaptation": "Use examples from service-based Instagram offers and compare a weak CTA versus a DM-driving CTA.",
++                "main_idea": "Break down one CTA mistake that kills qualified DMs and show the exact rewrite in one sentence.",
++                "shot_list": [
++                    "Direct-to-camera hook",
++                    "Screenshot of weak CTA",
++                    "Screenshot of stronger CTA",
++                    "Final direct CTA frame",
++                ],
++                "why_it_can_work": "It creates tension fast, shows proof early, and turns a hidden conversion mistake into a saveable lesson.",
++                "cta": "DM მომწერე \"CTA\" და ერთ შენ Reel-ს გადაგიკეთებ.",
++            },
++            {
++                "title": "Trend Adaptation Reel",
++                "hook": "ტრენდი მარტო მაშინ მუშაობს, როცა შენს ნიშაში სწორ ტკივილზე აჯდება.",
++                "format_type": "Trend audio plus on-screen myth-versus-reality text",
++                "trend_or_pattern_used": "Simple trend adaptation with myth-versus-reality framing",
++                "niche_adaptation": "Swap generic creator advice for the user's niche-specific mistake and show one fast correction.",
++                "main_idea": "Take a familiar trend pattern and rewrite the text so it exposes one repeated sales-blocking mistake in the user's niche.",
++                "shot_list": [
++                    "Trend opening beat",
++                    "Myth text overlay",
++                    "Reality text overlay",
++                    "Fast proof example",
++                    "Direct CTA close",
++                ],
++                "why_it_can_work": "It keeps the trend recognizable but makes the message feel native to the account's audience and goal.",
++                "cta": "თუ გინდა, მსგავსი ტრენდი შენს თემაზე მოგარგო, DM მომწერე \"TREND\".",
++            },
++            {
++                "title": "Comment-to-Reel Conversion",
++                "hook": "ეს შეკითხვა თუ ხშირად გესმის, უკვე მზად გაქვს შენი შემდეგი Reel.",
++                "format_type": "Comment-reply Reel with screen record and voiceover",
++                "trend_or_pattern_used": "Comment-reply authority pattern with proof-led explanation",
++                "niche_adaptation": "Use a real audience objection from the user's recent niche conversations and answer it with a fast demonstration.",
++                "main_idea": "Turn one repeated objection into a quick Reel that answers the question, shows proof, and leads into a DM CTA.",
++                "shot_list": [
++                    "Show the original comment",
++                    "Voiceover answer opening",
++                    "Proof or demo moment",
++                    "Single-step takeaway",
++                    "DM CTA close",
++                ],
++                "why_it_can_work": "It starts from a real audience signal, improves relevance, and makes the CTA feel like a natural next step.",
++                "cta": "DM მომწერე შენს ყველაზე ხშირ კითხვას და მისგან Reel-ს აგიწყობ.",
++            },
++        ]
++    }
++    return "\n".join([
++        "აქ არის 3 ძლიერი Reel იდეა შენი მიმდინარე Instagram კონტექსტისა და lead-generation მიზნის მიხედვით.",
++        "",
++        "### Reel 1",
++        "Title:",
++        "CTA Audit Reel",
++        "1-second hook:",
++        "თუ ხალხი გიყურებს, მაგრამ არ გწერს, პრობლემა ხშირად CTA-შია.",
++        "Format type:",
++        "Talking-head diagnosis with proof screenshots",
++        "Trend or pattern used:",
++        "Problem-first hook adapted from short expert breakdown Reels",
++        "Niche adaptation:",
++        "Use examples from service-based Instagram offers and compare a weak CTA versus a DM-driving CTA.",
++        "Main idea:",
++        "Break down one CTA mistake that kills qualified DMs and show the exact rewrite in one sentence.",
++        "Shot list:",
++        "1. Direct-to-camera hook",
++        "2. Screenshot of weak CTA",
++        "3. Screenshot of stronger CTA",
++        "4. Final direct CTA frame",
++        "Why it can work:",
++        "It creates tension fast, shows proof early, and turns a hidden conversion mistake into a saveable lesson.",
++        "CTA:",
++        "DM მომწერე \"CTA\" და ერთ შენ Reel-ს გადაგიკეთებ.",
++        "",
++        "### Reel 2",
++        "Title:",
++        "Trend Adaptation Reel",
++        "1-second hook:",
++        "ტრენდი მარტო მაშინ მუშაობს, როცა შენს ნიშაში სწორ ტკივილზე აჯდება.",
++        "Format type:",
++        "Trend audio plus on-screen myth-versus-reality text",
++        "Trend or pattern used:",
++        "Simple trend adaptation with myth-versus-reality framing",
++        "Niche adaptation:",
++        "Swap generic creator advice for the user's niche-specific mistake and show one fast correction.",
++        "Main idea:",
++        "Take a familiar trend pattern and rewrite the text so it exposes one repeated sales-blocking mistake in the user's niche.",
++        "Shot list:",
++        "1. Trend opening beat",
++        "2. Myth text overlay",
++        "3. Reality text overlay",
++        "4. Fast proof example",
++        "5. Direct CTA close",
++        "Why it can work:",
++        "It keeps the trend recognizable but makes the message feel native to the account's audience and goal.",
++        "CTA:",
++        "თუ გინდა, მსგავსი ტრენდი შენს თემაზე მოგარგო, DM მომწერე \"TREND\".",
++        "",
++        "### Reel 3",
++        "Title:",
++        "Comment-to-Reel Conversion",
++        "1-second hook:",
++        "ეს შეკითხვა თუ ხშირად გესმის, უკვე მზად გაქვს შენი შემდეგი Reel.",
++        "Format type:",
++        "Comment-reply Reel with screen record and voiceover",
++        "Trend or pattern used:",
++        "Comment-reply authority pattern with proof-led explanation",
++        "Niche adaptation:",
++        "Use a real audience objection from the user's recent niche conversations and answer it with a fast demonstration.",
++        "Main idea:",
++        "Turn one repeated objection into a quick Reel that answers the question, shows proof, and leads into a DM CTA.",
++        "Shot list:",
++        "1. Show the original comment",
++        "2. Voiceover answer opening",
++        "3. Proof or demo moment",
++        "4. Single-step takeaway",
++        "5. DM CTA close",
++        "Why it can work:",
++        "It starts from a real audience signal, improves relevance, and makes the CTA feel like a natural next step.",
++        "CTA:",
++        "DM მომწერე შენს ყველაზე ხშირ კითხვას და მისგან Reel-ს აგიწყობ.",
++        "",
++        f"STRUCTURED_OUTPUT_JSON: {json.dumps(structured_output, ensure_ascii=False)}",
++    ])
++
++
++def _upload_internal_reels_pack(client: TestClient) -> dict:
++    response = client.post(
++        "/api/v1/internal/knowledge-packs/upload",
++        headers=INTERNAL_HEADERS,
++        data={
++            "title": "Mariami Reels System Playbook v1",
++            "description": "Internal reels methodology for ideas, trend adaptation, hooks, formats, and reel feedback.",
++            "domain": "reels",
++            "supported_task_types": "reel_idea,reel_script,reel_feedback",
++            "scope": "system",
++            "visibility": "internal",
++            "status": "active",
++        },
++        files=[
++            (
++                "files",
++                (
++                    "mariami-reels.md",
++                    b"# KNOWLEDGE MODULE 1 - VIRAL IDEA MECHANICS\nUse tension and simplicity.\n\n# KNOWLEDGE MODULE 2 - TREND STRUCTURE\nAdapt the pattern to the niche and keep the first second sharp.",
++                    "text/markdown",
++                ),
++            ),
++        ],
++    )
++    assert response.status_code == 200, response.text
++    return response.json()
++
++
++def test_reel_idea_formatter_heuristic_fallback_keeps_fields_clean():
++    formatter = AgentResponseFormatterService()
++    reply = "\n".join([
++        "აქ არის 2 იდეა.",
++        "",
++        "### Reel 1",
++        "Title:",
++        "CTA Audit Reel",
++        "1-second hook:",
++        "თუ ხალხი გიყურებს, მაგრამ არ გწერს, CTA სუსტია.",
++        "Format type:",
++        "Talking-head diagnosis",
++        "Trend or pattern used:",
++        "Problem-first hook",
++        "Niche adaptation:",
++        "Use service-business examples.",
++        "Main idea:",
++        "Break down one CTA mistake.",
++        "Shot list:",
++        "1. Hook",
++        "2. Proof",
++        "3. Fix",
++        "Why it can work:",
++        "Fast tension plus proof.",
++        "CTA:",
++        "DM მომწერე \"CTA\".",
++        "",
++        "### Reel 2",
++        "Title:",
++        "Comment-to-Reel Conversion",
++        "1-second hook:",
++        "ხშირი კითხვა უკვე Reel-ია.",
++        "Format type:",
++        "Comment reply Reel",
++        "Trend or pattern used:",
++        "Comment-reply authority pattern",
++        "Niche adaptation:",
++        "Use one real objection.",
++        "Main idea:",
++        "Answer one objection fast.",
++        "Shot list:",
++        "1. Comment",
++        "2. Answer",
++        "3. CTA",
++        "Why it can work:",
++        "It feels relevant.",
++        "CTA:",
++        "DM მომწერე შენს კითხვას.",
++    ])
++
++    normalized = formatter.normalize_reply("reel_idea", reply)
++    assert normalized["parse_status"] == "parsed"
++    assert len(normalized["structured_output"]["ideas"]) == 2
++    first_idea = normalized["structured_output"]["ideas"][0]
++    second_idea = normalized["structured_output"]["ideas"][1]
++    assert first_idea["title"] == "CTA Audit Reel"
++    assert first_idea["cta"] == "DM მომწერე \"CTA\"."
++    assert "###" not in first_idea["cta"]
++    assert "Reel 2" not in first_idea["cta"]
++    assert second_idea["title"] == "Comment-to-Reel Conversion"
++
++
++def test_langflow_reels_prompt_includes_high_priority_contract():
++    service = LangflowService()
++    prompt = service._build_input_message(
++        message="მომეცი 3 ძლიერი Reels იდეა ჩემი მიმდინარე Instagram კონტექსტის მიხედვით.",
++        task_type="reel_idea",
++        goal="increase qualified inbound leads from Instagram",
++        profile_context={"niche": "beauty", "target_audience": "women 24-35", "brand_voice": "direct", "content_focus": ["reels"], "strengths": ["clear offer"], "weak_points": ["slow hooks"]},
++        recent_content_context={"top_formats": ["Reels"], "best_topics": ["hook logic"], "weak_topics": ["generic intros"], "best_ctas": ["DM CTA"], "weak_ctas": ["follow for more"], "notes": ["retention drops after the first second"]},
++        recent_posts_context={"posts": [{"topic": "hook logic"}]},
++        playbook_context={
++            "used_system_knowledge": True,
++            "matched_knowledge_domain": "reels",
++            "chunks": [
++                {"chunk_label": "KNOWLEDGE MODULE 1 - VIRAL IDEA MECHANICS", "text": "Use tension and simplicity."},
++                {"chunk_label": "KNOWLEDGE MODULE 2 - TREND STRUCTURE", "text": "Adapt the pattern to the niche."},
++            ],
++        },
++    )
++    assert "High-priority reels methodology rules:" in prompt
++    assert "STRUCTURED_OUTPUT_JSON:" in prompt
++    assert "trend or pattern adaptation" in prompt.lower() or "trend adaptation" in prompt.lower()
++    assert "Playbook chunk 1 [KNOWLEDGE MODULE 1 - VIRAL IDEA MECHANICS]" in prompt
++
++
++def test_reel_idea_route_uses_system_knowledge_and_returns_clean_structured_output(monkeypatch, tmp_path):
++    monkeypatch.setenv("INTERNAL_ADMIN_KEY", INTERNAL_HEADERS["X-Internal-Admin-Key"])
++
++    knowledge_service = KnowledgePackService(
++        data_file=tmp_path / "knowledge_packs.json",
++        chunks_file=tmp_path / "knowledge_pack_chunks.json",
++        storage_dir=tmp_path / "knowledge_packs_files",
++    )
++    history_service = GenerationHistoryService()
++    history_service.data_file = tmp_path / "generation_history.json"
++
++    monkeypatch.setattr(knowledge_pack_route, "knowledge_pack_service", knowledge_service)
++    monkeypatch.setattr(agent_route, "knowledge_pack_service", knowledge_service)
++    monkeypatch.setattr(agent_route, "generation_history_service", history_service)
++    monkeypatch.setattr(internal_generation_debug_route, "generation_history_service", history_service)
++
++    captured_calls: list[dict] = []
++
++    monkeypatch.setattr(agent_route.billing_service, "enforce_agent_access", lambda user_id, task_type: {"current_plan": "pro"})
++    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id: None)
++    monkeypatch.setattr(agent_route.connected_accounts_service, "resolve_account_id", lambda user_id, account_id=None: account_id or "acct-1")
++    monkeypatch.setattr(agent_route.connected_accounts_service, "find_user_id_by_account_id", lambda account_id: "user-1")
++    monkeypatch.setattr(agent_route.instagram_context_sync_service, "get_context_freshness", lambda account_id: {
++        "context_was_fresh": True,
++        "last_synced_at": "2026-04-27T11:45:00+00:00",
++        "stale_reasons": [],
++        "has_complete_context": True,
++    })
++    monkeypatch.setattr(agent_route.profile_context_service, "get_context", lambda account_id: {
++        "brand_name": "Lead Lab",
++        "niche": "service marketing",
++        "target_audience": "service founders",
++        "brand_voice": "direct",
++        "bio": "We turn weak DMs into qualified leads",
++        "content_focus": ["reels", "proof"],
++        "strengths": ["clear offer"],
++        "weak_points": ["slow CTA"],
++    })
++    monkeypatch.setattr(agent_route.recent_posts_context_service, "get_context", lambda account_id: {
++        "posts": [
++            {"post_id": "p1", "content_type": "REEL", "topic": "CTA mistakes", "caption": "CTA fixes", "views": 1000, "likes": 98, "comments": 12, "saves": 21},
++            {"post_id": "p2", "content_type": "REEL", "topic": "hooks", "caption": "Hook logic", "views": 900, "likes": 86, "comments": 9, "saves": 17},
++        ]
++    })
++    monkeypatch.setattr(agent_route.recent_content_context_service, "get_context", lambda account_id: {
++        "top_formats": ["Reels"],
++        "best_topics": ["CTA mistakes", "hook logic"],
++        "weak_topics": ["generic educational intros"],
++        "best_ctas": ["DM CTA"],
++        "weak_ctas": ["follow for more"],
++        "notes": ["retention drops after the first second", "proof-led content converts better"],
++    })
++
++    def fake_run_agent(**kwargs):
++        captured_calls.append(kwargs)
++        return {
++            "reply": _build_reel_idea_reply(),
++            "account_id": kwargs.get("account_id"),
++        }
++
++    monkeypatch.setattr(agent_route.langflow_service, "run_agent", fake_run_agent)
++
++    client = TestClient(app)
++    _upload_internal_reels_pack(client)
++
++    payload = {
++        "message": "მომეცი 3 ძლიერი Reels იდეა ჩემი მიმდინარე Instagram კონტექსტის მიხედვით.",
++        "task_type": "reel_idea",
++        "user_id": "user-1",
++        "goal": "increase qualified inbound leads from Instagram",
++        "auto_sync": True,
++    }
++    response = client.post("/api/v1/agent/chat", json=payload)
++    assert response.status_code == 200, response.text
++
++    response_payload = response.json()
++    assert response_payload["parse_status"] == "parsed"
++    assert "STRUCTURED_OUTPUT_JSON:" not in response_payload["reply"]
++    assert "Format type:" in response_payload["reply"]
++    assert "Trend or pattern used:" in response_payload["reply"]
++    assert "Why it can work:" in response_payload["reply"]
++
++    ideas = response_payload["structured_output"]["ideas"]
++    assert len(ideas) == 3
++    for idea in ideas:
++        assert idea["title"]
++        assert idea["format_type"]
++        assert idea["trend_or_pattern_used"]
++        assert idea["why_it_can_work"]
++        assert idea["cta"]
++        assert "###" not in idea["cta"]
++        assert "Reel 2" not in idea["cta"]
++        assert "Reel 3" not in idea["cta"]
++        assert not idea["title"].startswith("აქ არის 3 ძლიერი")
++
++    captured_call = captured_calls[-1]
++    playbook_context = captured_call["playbook_context"]
++    assert playbook_context["used_system_knowledge"] is True
++    assert playbook_context["matched_knowledge_domain"] == "reels"
++    assert playbook_context["retrieved_chunk_count"] > 0
++    assert playbook_context["retrieved_chunk_titles"]
++
++    debug_response = client.get(
++        "/api/v1/internal/generation-debug/latest",
++        headers=INTERNAL_HEADERS,
++        params={"user_id": "user-1", "task_type": "reel_idea"},
++    )
++    assert debug_response.status_code == 200, debug_response.text
++    debug_payload = debug_response.json()
++    assert debug_payload["used_system_knowledge"] is True
++    assert debug_payload["matched_knowledge_domain"] == "reels"
++    assert debug_payload["retrieved_chunk_count"] > 0
++    assert debug_payload["retrieved_chunk_titles"]
++    assert debug_payload["parse_status"] == "parsed"
++    assert "chunks" not in debug_payload

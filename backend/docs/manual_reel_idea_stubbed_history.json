@@ -1,0 +1,43 @@
+{
+  "log_id": "3c7b2609-c057-41e9-9bc7-f2a46698002c",
+  "timestamp": "2026-04-27T17:44:29.045541+00:00",
+  "user_id": "user-1",
+  "account_id": null,
+  "task_type": "reel_idea",
+  "status": "success",
+  "message_preview": "?????? 3 ?????? Reels ???? ???? ????????? Instagram ?????????? ????????.",
+  "response_preview": "Title: CTA Diagnosis Reel 1-second hook: ?? ??????? ?????, ?????? DM ???, ???????? ?????? CTA-???. Format type: Talking-head diagnosis with proof screenshots...",
+  "error_message": null,
+  "niche": "creator education / personal brand",
+  "target_audience": "creators and personal brands",
+  "goal": "increase qualified inbound leads from Instagram",
+  "auto_sync": false,
+  "sync_attempted": false,
+  "sync_succeeded": null,
+  "context_was_fresh": null,
+  "sync_skipped": null,
+  "last_synced_at": null,
+  "used_real_instagram_context": true,
+  "used_system_knowledge": true,
+  "matched_knowledge_domain": "reels",
+  "matched_knowledge_pack_ids": [
+    "kp_sample_reels_system"
+  ],
+  "retrieved_chunk_count": 3,
+  "retrieved_chunk_titles": [
+    "VIRAL IDEA MECHANICS",
+    "TREND STRUCTURE",
+    "CTA LOGIC"
+  ],
+  "parse_status": "parsed",
+  "used_langflow": false,
+  "model_provider": "openai",
+  "model_name": "gpt-4o-mini",
+  "prompt_section_names": [
+    "base_system_instruction",
+    "task_instruction",
+    "reels_high_priority_instruction",
+    "internal_strategy_context",
+    "user_request"
+  ]
+}

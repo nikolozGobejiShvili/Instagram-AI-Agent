@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# Secrets. Nothing here may ever be committed.
+# ---------------------------------------------------------------------------
+# backend/.env currently holds a live Meta app secret, a Langflow API key and
+# the internal admin key. Any variant of an env file is excluded, not just that
+# one path, so a copy made under a different name cannot slip through.
+.env
+*.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Runtime data.
+# ---------------------------------------------------------------------------
+# The whole directory is excluded rather than a *.json pattern: a bare pattern
+# would miss the Chroma store and the uploaded knowledge-pack files that live in
+# subdirectories. It also holds instagram_connections.json, which contains a
+# real long-lived Meta access token in cleartext.
+backend/app/data/
+
+# Generated debug dumps and the exported Langflow flow definition. Flow exports
+# can carry embedded credentials.
+backend/docs/_*
+backend/docs/langflow_instagram_agent_backup.json
+
+# ---------------------------------------------------------------------------
+# Environments, caches, build output
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.benchmarks/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# ---------------------------------------------------------------------------
+# Logs and local artefacts
+# ---------------------------------------------------------------------------
+logs/
+*.log
+*.sqlite3
+*.db
+
+# Local tooling binaries (ngrok config carries an authtoken)
+tools/ngrok/
+*.exe
+*.zip
+*.bin
+
+# apex run state (prompt drafts, grounding digests) — local working notes
+.apex/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

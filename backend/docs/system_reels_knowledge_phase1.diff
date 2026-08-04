@@ -1,0 +1,1651 @@
+--- C:\Users\GREENC~1\AppData\Local\Temp\knowledge_pack_service_before_system_reels_phase1.py
++++ backend\app\services\knowledge_pack_service.py
+@@ -37,6 +37,14 @@
+         "link_analysis",
+         "performance_summary",
+     }
++    REELS_TASK_TYPES = {
++        "reel_idea",
++        "reel_script",
++        "reel_feedback",
++    }
++    SUPPORTED_SCOPES = {"system", "user"}
++    SUPPORTED_VISIBILITIES = {"internal", "user"}
++    SUPPORTED_STATUSES = {"active", "inactive"}
+     STOP_WORDS = {
+         "the",
+         "and",
+@@ -77,18 +85,18 @@
+         "used",
+         "using",
+         "yourself",
+-        "მაგრამ",
+-        "როცა",
+-        "უნდა",
+-        "რომ",
+-        "თუ",
+-        "არის",
+-        "და",
+-        "ეს",
+-        "არა",
+-        "რა",
+-        "მისი",
+-        "მეტი",
++        "áƒ›áƒáƒ’áƒ áƒáƒ›",
++        "áƒ áƒáƒªáƒ",
++        "áƒ£áƒœáƒ“áƒ",
++        "áƒ áƒáƒ›",
++        "áƒ—áƒ£",
++        "áƒáƒ áƒ˜áƒ¡",
++        "áƒ“áƒ",
++        "áƒ”áƒ¡",
++        "áƒáƒ áƒ",
++        "áƒ áƒ",
++        "áƒ›áƒ˜áƒ¡áƒ˜",
++        "áƒ›áƒ”áƒ¢áƒ˜",
+     }
+     TASK_KEYWORDS = {
+         "reel_idea": ["reel", "hook", "cta", "idea", "shot", "angle"],
+@@ -113,32 +121,6 @@
+         self.chunks_file = chunks_file or data_root / "knowledge_pack_chunks.json"
+         self.storage_dir = storage_dir or data_root / "knowledge_packs_files"
+ 
+-    def _load_packs(self) -> dict:
+-        if not self.data_file.exists():
+-            return {}
+-
+-        with open(self.data_file, "r", encoding="utf-8") as f:
+-            return json.load(f)
+-
+-    def _save_packs(self, items: dict) -> None:
+-        self.data_file.parent.mkdir(parents=True, exist_ok=True)
+-
+-        with open(self.data_file, "w", encoding="utf-8") as f:
+-            json.dump(items, f, ensure_ascii=False, indent=2)
+-
+-    def _load_chunks(self) -> dict:
+-        if not self.chunks_file.exists():
+-            return {}
+-
+-        with open(self.chunks_file, "r", encoding="utf-8") as f:
+-            return json.load(f)
+-
+-    def _save_chunks(self, items: dict) -> None:
+-        self.chunks_file.parent.mkdir(parents=True, exist_ok=True)
+-
+-        with open(self.chunks_file, "w", encoding="utf-8") as f:
+-            json.dump(items, f, ensure_ascii=False, indent=2)
+-
+     def _now(self) -> datetime:
+         return datetime.now(timezone.utc)
+ 
+@@ -146,7 +128,34 @@
+         normalized_value = " ".join((value or "").split()).strip()
+         return normalized_value or None
+ 
+-    def _normalize_supported_task_types(self, supported_task_types: list[str] | None) -> list[str]:
++    def _normalize_scope(self, scope: str | None, *, default: str = "user") -> str:
++        normalized_scope = self._normalize_text(scope) or default
++        if normalized_scope not in self.SUPPORTED_SCOPES:
++            raise HTTPException(status_code=400, detail=f"Unsupported knowledge scope '{normalized_scope}'")
++        return normalized_scope
++
++    def _normalize_visibility(self, visibility: str | None, *, default: str) -> str:
++        normalized_visibility = self._normalize_text(visibility) or default
++        if normalized_visibility not in self.SUPPORTED_VISIBILITIES:
++            raise HTTPException(status_code=400, detail=f"Unsupported knowledge visibility '{normalized_visibility}'")
++        return normalized_visibility
++
++    def _normalize_status(self, status: str | None, *, default: str = "inactive") -> str:
++        normalized_status = self._normalize_text(status) or default
++        if normalized_status not in self.SUPPORTED_STATUSES:
++            raise HTTPException(status_code=400, detail=f"Unsupported knowledge pack status '{normalized_status}'")
++        return normalized_status
++
++    def _normalize_domain(self, domain: str | None) -> str | None:
++        normalized_domain = self._normalize_text(domain)
++        return normalized_domain.lower() if normalized_domain else None
++
++    def _normalize_supported_task_types(
++        self,
++        supported_task_types: list[str] | None,
++        *,
++        strict: bool = True,
++    ) -> list[str]:
+         if not supported_task_types:
+             return []
+ 
+@@ -156,10 +165,12 @@
+             if not normalized_task_type:
+                 continue
+             if normalized_task_type not in self.SUPPORTED_TASK_TYPES:
+-                raise HTTPException(
+-                    status_code=400,
+-                    detail=f"Unsupported task type '{normalized_task_type}' for knowledge pack",
+-                )
++                if strict:
++                    raise HTTPException(
++                        status_code=400,
++                        detail=f"Unsupported task type '{normalized_task_type}' for knowledge pack",
++                    )
++                continue
+             if normalized_task_type not in normalized_values:
+                 normalized_values.append(normalized_task_type)
+ 
+@@ -270,12 +281,111 @@
+ 
+         return [chunk for chunk in chunks if chunk]
+ 
++    def _normalize_pack_record(self, pack_id: str, pack: dict) -> dict:
++        raw_scope = self._normalize_text(str(pack.get("scope") or ""))
++        inferred_scope = raw_scope or ("system" if str(pack.get("owner_user_id") or "").strip() == "system" else "user")
++        scope = inferred_scope if inferred_scope in self.SUPPORTED_SCOPES else "user"
++
++        supported_task_types = self._normalize_supported_task_types(
++            pack.get("supported_task_types"),
++            strict=False,
++        )
++        inferred_domain = None
++        if supported_task_types and all(task_type in self.REELS_TASK_TYPES for task_type in supported_task_types):
++            inferred_domain = "reels"
++        domain = self._normalize_domain(pack.get("domain")) or inferred_domain
++
++        default_visibility = "internal" if scope == "system" else "user"
++        raw_visibility = self._normalize_text(str(pack.get("visibility") or "")) or default_visibility
++        visibility = raw_visibility if raw_visibility in self.SUPPORTED_VISIBILITIES else default_visibility
++
++        raw_status = self._normalize_text(str(pack.get("status") or "")) or "inactive"
++        status = raw_status if raw_status in self.SUPPORTED_STATUSES else "inactive"
++
++        owner_user_id = self._normalize_text(str(pack.get("owner_user_id") or "")) or ("system" if scope == "system" else "unknown")
++        created_at = self._normalize_text(str(pack.get("created_at") or "")) or self._now().isoformat()
++        updated_at = self._normalize_text(str(pack.get("updated_at") or "")) or created_at
++
++        uploaded_files = pack.get("uploaded_files")
++        if not isinstance(uploaded_files, list):
++            uploaded_files = []
++
++        try:
++            total_chunks = int(pack.get("total_chunks") or 0)
++        except (TypeError, ValueError):
++            total_chunks = 0
++
++        return {
++            "knowledge_pack_id": self._normalize_text(str(pack.get("knowledge_pack_id") or "")) or pack_id,
++            "owner_user_id": owner_user_id,
++            "title": self._normalize_text(str(pack.get("title") or "")) or "Untitled Knowledge Pack",
++            "description": self._normalize_text(pack.get("description")),
++            "scope": scope,
++            "domain": domain,
++            "visibility": visibility,
++            "status": status,
++            "supported_task_types": supported_task_types,
++            "uploaded_files": uploaded_files,
++            "total_chunks": total_chunks,
++            "created_at": created_at,
++            "updated_at": updated_at,
++        }
++
++    def _load_packs(self) -> dict:
++        if not self.data_file.exists():
++            return {}
++
++        with open(self.data_file, "r", encoding="utf-8") as f:
++            raw_items = json.load(f)
++
++        if not isinstance(raw_items, dict):
++            return {}
++
++        normalized_items = {}
++        mutated = False
++        for pack_id, pack in raw_items.items():
++            if not isinstance(pack, dict):
++                mutated = True
++                continue
++
++            normalized_pack = self._normalize_pack_record(str(pack_id), pack)
++            normalized_items[normalized_pack["knowledge_pack_id"]] = normalized_pack
++            if pack != normalized_pack or str(pack_id) != normalized_pack["knowledge_pack_id"]:
++                mutated = True
++
++        if mutated:
++            self._save_packs(normalized_items)
++
++        return normalized_items
++
++    def _save_packs(self, items: dict) -> None:
++        self.data_file.parent.mkdir(parents=True, exist_ok=True)
++
++        with open(self.data_file, "w", encoding="utf-8") as f:
++            json.dump(items, f, ensure_ascii=False, indent=2)
++
++    def _load_chunks(self) -> dict:
++        if not self.chunks_file.exists():
++            return {}
++
++        with open(self.chunks_file, "r", encoding="utf-8") as f:
++            return json.load(f)
++
++    def _save_chunks(self, items: dict) -> None:
++        self.chunks_file.parent.mkdir(parents=True, exist_ok=True)
++
++        with open(self.chunks_file, "w", encoding="utf-8") as f:
++            json.dump(items, f, ensure_ascii=False, indent=2)
++
+     def _serialize_pack(self, pack: dict) -> dict:
+         return {
+             "knowledge_pack_id": pack["knowledge_pack_id"],
+             "owner_user_id": pack["owner_user_id"],
+             "title": pack["title"],
+             "description": pack.get("description"),
++            "scope": pack.get("scope"),
++            "domain": pack.get("domain"),
++            "visibility": pack.get("visibility"),
+             "status": pack["status"],
+             "supported_task_types": list(pack.get("supported_task_types", [])),
+             "uploaded_files": list(pack.get("uploaded_files", [])),
+@@ -291,12 +401,19 @@
+             reverse=True,
+         )
+ 
+-    def _get_pack_or_404(self, knowledge_pack_id: str) -> dict:
+-        packs = self._load_packs()
+-        pack = packs.get(knowledge_pack_id)
+-        if not pack:
+-            raise HTTPException(status_code=404, detail="Knowledge pack was not found")
+-        return pack
++    def _resolve_pack_group_key(self, pack: dict) -> tuple[str, str | None, str]:
++        if pack.get("scope") == "system":
++            return (
++                str(pack.get("scope") or "system"),
++                self._normalize_domain(pack.get("domain")),
++                str(pack.get("visibility") or "internal"),
++            )
++
++        return (
++            str(pack.get("scope") or "user"),
++            str(pack.get("owner_user_id") or ""),
++            str(pack.get("visibility") or "user"),
++        )
+ 
+     def upload_pack(
+         self,
+@@ -306,14 +423,40 @@
+         description: str | None = None,
+         supported_task_types: list[str] | None = None,
+         uploaded_files: list[dict],
++        scope: str = "user",
++        domain: str | None = None,
++        visibility: str | None = None,
++        status: str = "inactive",
+     ) -> dict:
++        normalized_scope = self._normalize_scope(scope)
++        normalized_domain = self._normalize_domain(domain)
++        normalized_status = self._normalize_status(status)
+         normalized_owner_user_id = self._normalize_text(owner_user_id)
+         normalized_title = self._normalize_text(title)
+         normalized_description = self._normalize_text(description)
+         normalized_supported_task_types = self._normalize_supported_task_types(supported_task_types)
+-
+-        if not normalized_owner_user_id:
++        normalized_visibility = self._normalize_visibility(
++            visibility,
++            default="internal" if normalized_scope == "system" else "user",
++        )
++
++        if normalized_scope == "system":
++            normalized_owner_user_id = "system"
++            if normalized_domain != "reels":
++                raise HTTPException(
++                    status_code=400,
++                    detail="System knowledge domain 'reels' is required in phase 1",
++                )
++            if not normalized_supported_task_types:
++                normalized_supported_task_types = sorted(self.REELS_TASK_TYPES)
++            elif any(task_type not in self.REELS_TASK_TYPES for task_type in normalized_supported_task_types):
++                raise HTTPException(
++                    status_code=400,
++                    detail="System reels knowledge only supports reel_idea, reel_script, and reel_feedback in phase 1",
++                )
++        elif not normalized_owner_user_id:
+             raise HTTPException(status_code=400, detail="owner_user_id is required for knowledge pack upload")
++
+         if not normalized_title:
+             raise HTTPException(status_code=400, detail="title is required for knowledge pack upload")
+         if not uploaded_files:
+@@ -381,7 +524,10 @@
+             "owner_user_id": normalized_owner_user_id,
+             "title": normalized_title,
+             "description": normalized_description,
+-            "status": "inactive",
++            "scope": normalized_scope,
++            "domain": normalized_domain,
++            "visibility": normalized_visibility,
++            "status": normalized_status,
+             "supported_task_types": normalized_supported_task_types,
+             "uploaded_files": files_metadata,
+             "total_chunks": len(chunks),
+@@ -398,6 +544,16 @@
+                 (pack_storage_dir / file_artifact["stored_file_name"]).write_bytes(file_artifact["content"])
+ 
+             packs[knowledge_pack_id] = pack
++            if normalized_status == "active":
++                target_group = self._resolve_pack_group_key(pack)
++                for candidate_pack_id, candidate_pack in packs.items():
++                    if candidate_pack_id == knowledge_pack_id:
++                        continue
++                    if self._resolve_pack_group_key(candidate_pack) != target_group:
++                        continue
++                    candidate_pack["status"] = "inactive"
++                    candidate_pack["updated_at"] = now_iso
++
+             all_chunks[knowledge_pack_id] = chunks
+             self._save_packs(packs)
+             self._save_chunks(all_chunks)
+@@ -408,24 +564,47 @@
+             raise HTTPException(status_code=500, detail=f"Knowledge pack upload failed: {exc}") from exc
+ 
+         logger.info(
+-            "Uploaded knowledge pack knowledge_pack_id=%s owner_user_id=%s files=%s chunks=%s",
++            "Uploaded knowledge pack knowledge_pack_id=%s scope=%s domain=%s visibility=%s files=%s chunks=%s",
+             knowledge_pack_id,
+-            normalized_owner_user_id,
++            normalized_scope,
++            normalized_domain,
++            normalized_visibility,
+             len(files_metadata),
+             len(chunks),
+         )
+         return self._serialize_pack(pack)
+ 
+-    def list_packs(self, user_id: str) -> dict:
++    def list_packs(
++        self,
++        *,
++        owner_user_id: str | None = None,
++        scope: str | None = None,
++        domain: str | None = None,
++        visibility: str | None = None,
++    ) -> dict:
+         packs = self._load_packs()
+-        user_packs = [
+-            self._serialize_pack(pack)
+-            for pack in packs.values()
+-            if pack.get("owner_user_id") == user_id
+-        ]
++        normalized_owner_user_id = self._normalize_text(owner_user_id)
++        normalized_scope = self._normalize_scope(scope, default="user") if scope is not None else None
++        normalized_domain = self._normalize_domain(domain)
++        normalized_visibility = self._normalize_visibility(visibility, default="user") if visibility is not None else None
++
++        matched_packs = []
++        for pack in packs.values():
++            if normalized_owner_user_id and pack.get("owner_user_id") != normalized_owner_user_id:
++                continue
++            if normalized_scope and pack.get("scope") != normalized_scope:
++                continue
++            if normalized_domain and pack.get("domain") != normalized_domain:
++                continue
++            if normalized_visibility and pack.get("visibility") != normalized_visibility:
++                continue
++            matched_packs.append(self._serialize_pack(pack))
++
+         return {
+-            "user_id": user_id,
+-            "knowledge_packs": self._sort_packs(user_packs),
++            "scope": normalized_scope,
++            "domain": normalized_domain,
++            "visibility": normalized_visibility,
++            "knowledge_packs": self._sort_packs(matched_packs),
+         }
+ 
+     def activate_pack(self, knowledge_pack_id: str) -> dict:
+@@ -435,18 +614,19 @@
+             raise HTTPException(status_code=404, detail="Knowledge pack was not found")
+ 
+         now_iso = self._now().isoformat()
+-        owner_user_id = pack["owner_user_id"]
++        target_group = self._resolve_pack_group_key(pack)
+         for candidate_pack_id, candidate_pack in packs.items():
+-            if candidate_pack.get("owner_user_id") != owner_user_id:
++            if self._resolve_pack_group_key(candidate_pack) != target_group:
+                 continue
+             candidate_pack["status"] = "active" if candidate_pack_id == knowledge_pack_id else "inactive"
+             candidate_pack["updated_at"] = now_iso
+ 
+         self._save_packs(packs)
+         logger.info(
+-            "Activated knowledge pack knowledge_pack_id=%s owner_user_id=%s",
++            "Activated knowledge pack knowledge_pack_id=%s scope=%s domain=%s",
+             knowledge_pack_id,
+-            owner_user_id,
++            pack.get("scope"),
++            pack.get("domain"),
+         )
+         return self._serialize_pack(packs[knowledge_pack_id])
+ 
+@@ -461,9 +641,10 @@
+         packs[knowledge_pack_id] = pack
+         self._save_packs(packs)
+         logger.info(
+-            "Deactivated knowledge pack knowledge_pack_id=%s owner_user_id=%s",
++            "Deactivated knowledge pack knowledge_pack_id=%s scope=%s domain=%s",
+             knowledge_pack_id,
+-            pack["owner_user_id"],
++            pack.get("scope"),
++            pack.get("domain"),
+         )
+         return self._serialize_pack(pack)
+ 
+@@ -488,13 +669,37 @@
+         packs = self._load_packs()
+         active_packs = [
+             pack for pack in packs.values()
+-            if pack.get("owner_user_id") == owner_user_id and pack.get("status") == "active"
++            if (
++                pack.get("owner_user_id") == owner_user_id
++                and pack.get("scope") == "user"
++                and pack.get("visibility") == "user"
++                and pack.get("status") == "active"
++            )
+         ]
+         if not active_packs:
+             return None
+ 
+         active_packs = self._sort_packs(active_packs)
+         return active_packs[0]
++
++    def get_active_system_packs(self, *, domain: str, task_type: str | None = None) -> list[dict]:
++        normalized_domain = self._normalize_domain(domain)
++        packs = self._load_packs()
++        matched_packs = []
++        for pack in packs.values():
++            if pack.get("scope") != "system":
++                continue
++            if pack.get("visibility") != "internal":
++                continue
++            if pack.get("status") != "active":
++                continue
++            if normalized_domain and pack.get("domain") != normalized_domain:
++                continue
++            supported_task_types = pack.get("supported_task_types", [])
++            if task_type and supported_task_types and task_type not in supported_task_types:
++                continue
++            matched_packs.append(pack)
++        return self._sort_packs(matched_packs)
+ 
+     def _tokenize(self, text: str) -> list[str]:
+         tokens = re.findall(r"[0-9A-Za-z\u10A0-\u10FF]+", (text or "").lower())
+@@ -569,6 +774,46 @@
+                 phrase_bonus += 0.15
+ 
+         return overlap_score + phrase_bonus
++
++    def _select_top_chunks(
++        self,
++        *,
++        candidate_packs: list[dict],
++        query_tokens: list[str],
++        top_k: int,
++    ) -> tuple[list[dict], list[str]]:
++        if not candidate_packs or not query_tokens:
++            return [], []
++
++        all_chunks = self._load_chunks()
++        query_counter = Counter(query_tokens)
++        scored_chunks = []
++        for pack in candidate_packs:
++            pack_id = str(pack.get("knowledge_pack_id") or "")
++            for chunk in all_chunks.get(pack_id, []):
++                chunk_text = str(chunk.get("text") or "")
++                score = self._score_chunk(query_counter, query_tokens, chunk_text)
++                if score <= 0:
++                    continue
++                scored_chunks.append((
++                    score,
++                    {
++                        **chunk,
++                        "scope": pack.get("scope"),
++                        "domain": pack.get("domain"),
++                        "visibility": pack.get("visibility"),
++                    },
++                ))
++
++        scored_chunks.sort(key=lambda item: item[0], reverse=True)
++        selected_chunks = [chunk for _, chunk in scored_chunks[:top_k]]
++        matched_pack_ids = []
++        for chunk in selected_chunks:
++            matched_pack_id = self._normalize_text(str(chunk.get("knowledge_pack_id") or ""))
++            if matched_pack_id and matched_pack_id not in matched_pack_ids:
++                matched_pack_ids.append(matched_pack_id)
++
++        return selected_chunks, matched_pack_ids
+ 
+     def retrieve_context(
+         self,
+@@ -594,16 +839,10 @@
+             }
+ 
+         if active_pack.get("supported_task_types") and task_type not in active_pack.get("supported_task_types", []):
+-            logger.info(
+-                "Active knowledge pack skipped for unsupported task type owner_user_id=%s knowledge_pack_id=%s task_type=%s",
+-                owner_user_id,
+-                active_pack["knowledge_pack_id"],
+-                task_type,
+-            )
+             return {
+-                "used_knowledge_pack": True,
+-                "knowledge_pack_id": active_pack["knowledge_pack_id"],
+-                "knowledge_pack_title": active_pack["title"],
++                "used_knowledge_pack": False,
++                "knowledge_pack_id": None,
++                "knowledge_pack_title": None,
+                 "retrieved_chunks_count": 0,
+                 "knowledge_applied": False,
+                 "chunks": [],
+@@ -618,40 +857,67 @@
+             recent_posts_context=recent_posts_context,
+         )
+         query_tokens = self._tokenize(query_text)
+-        if not query_tokens:
+-            return {
+-                "used_knowledge_pack": True,
+-                "knowledge_pack_id": active_pack["knowledge_pack_id"],
+-                "knowledge_pack_title": active_pack["title"],
+-                "retrieved_chunks_count": 0,
+-                "knowledge_applied": False,
+-                "chunks": [],
+-            }
+-
+-        chunks = self._load_chunks().get(active_pack["knowledge_pack_id"], [])
+-        scored_chunks = []
+-        query_counter = Counter(query_tokens)
+-        for chunk in chunks:
+-            chunk_text = str(chunk.get("text") or "")
+-            score = self._score_chunk(query_counter, query_tokens, chunk_text)
+-            if score <= 0:
+-                continue
+-            scored_chunks.append((score, chunk))
+-
+-        scored_chunks.sort(key=lambda item: item[0], reverse=True)
+-        selected_chunks = [chunk for _, chunk in scored_chunks[:top_k]]
+-        logger.info(
+-            "Retrieved knowledge pack chunks owner_user_id=%s knowledge_pack_id=%s task_type=%s chunks=%s",
+-            owner_user_id,
+-            active_pack["knowledge_pack_id"],
+-            task_type,
+-            len(selected_chunks),
++        selected_chunks, _ = self._select_top_chunks(
++            candidate_packs=[active_pack],
++            query_tokens=query_tokens,
++            top_k=top_k,
+         )
+         return {
+-            "used_knowledge_pack": True,
+-            "knowledge_pack_id": active_pack["knowledge_pack_id"],
+-            "knowledge_pack_title": active_pack["title"],
++            "used_knowledge_pack": bool(selected_chunks),
++            "knowledge_pack_id": active_pack["knowledge_pack_id"] if selected_chunks else None,
++            "knowledge_pack_title": active_pack["title"] if selected_chunks else None,
+             "retrieved_chunks_count": len(selected_chunks),
+             "knowledge_applied": bool(selected_chunks),
+             "chunks": selected_chunks,
+         }
++
++    def retrieve_system_context(
++        self,
++        *,
++        domain: str,
++        task_type: str,
++        message: str,
++        goal: str | None = None,
++        profile_context: dict | None = None,
++        recent_content_context: dict | None = None,
++        recent_posts_context: dict | None = None,
++        top_k: int = 4,
++    ) -> dict:
++        candidate_packs = self.get_active_system_packs(domain=domain, task_type=task_type)
++        if not candidate_packs:
++            return {
++                "used_system_knowledge": False,
++                "matched_knowledge_domain": None,
++                "matched_knowledge_pack_ids": [],
++                "retrieved_chunk_count": 0,
++                "chunks": [],
++            }
++
++        query_text = self._build_retrieval_query(
++            task_type=task_type,
++            message=message,
++            goal=goal,
++            profile_context=profile_context,
++            recent_content_context=recent_content_context,
++            recent_posts_context=recent_posts_context,
++        )
++        query_tokens = self._tokenize(query_text)
++        selected_chunks, matched_pack_ids = self._select_top_chunks(
++            candidate_packs=candidate_packs,
++            query_tokens=query_tokens,
++            top_k=top_k,
++        )
++        logger.info(
++            "Retrieved system knowledge chunks domain=%s task_type=%s matched_packs=%s chunks=%s",
++            domain,
++            task_type,
++            ",".join(matched_pack_ids) if matched_pack_ids else "none",
++            len(selected_chunks),
++        )
++        return {
++            "used_system_knowledge": bool(selected_chunks),
++            "matched_knowledge_domain": domain if selected_chunks else None,
++            "matched_knowledge_pack_ids": matched_pack_ids,
++            "retrieved_chunk_count": len(selected_chunks),
++            "chunks": selected_chunks,
++        }
+
+--- C:\Users\GREENC~1\AppData\Local\Temp\knowledge_packs_route_before_system_reels_phase1.py
++++ backend\app\api\routes\knowledge_packs.py
+@@ -1,5 +1,6 @@
+ import json
+ import importlib.util
++import os
+ 
+ from fastapi import APIRouter, HTTPException, Request
+ 
+@@ -11,10 +12,18 @@
+ )
+ from app.services.knowledge_pack_service import KnowledgePackService
+ 
+-router = APIRouter(prefix="/api/v1/knowledge-packs", tags=["knowledge-packs"])
++router = APIRouter(prefix="/api/v1/internal/knowledge-packs", tags=["internal-knowledge-packs"])
+ 
+ knowledge_pack_service = KnowledgePackService()
+ MULTIPART_AVAILABLE = bool(importlib.util.find_spec("multipart"))
++INTERNAL_ADMIN_HEADER = "X-Internal-Admin-Key"
++
++
++def _require_internal_admin_access(request: Request) -> None:
++    expected_key = os.getenv("INTERNAL_ADMIN_KEY", "").strip()
++    provided_key = request.headers.get(INTERNAL_ADMIN_HEADER, "").strip()
++    if not expected_key or provided_key != expected_key:
++        raise HTTPException(status_code=403, detail="Internal admin access is required")
+ 
+ 
+ def _parse_supported_task_types(value: str | None) -> list[str]:
+@@ -47,31 +56,53 @@
+             "multipart/form-data": {
+                 "schema": {
+                     "type": "object",
+-                    "required": ["owner_user_id", "title", "files"],
++                    "required": ["title", "files"],
+                     "properties": {
+-                        "owner_user_id": {
+-                            "type": "string",
+-                            "title": "Owner User Id",
+-                            "description": "The user who owns this knowledge pack.",
+-                            "example": "user-1",
+-                        },
+                         "title": {
+                             "type": "string",
+                             "title": "Title",
+-                            "description": "Human-readable knowledge pack name.",
+-                            "example": "Mariami SMM Playbook",
++                            "description": "Human-readable internal knowledge pack name.",
++                            "example": "Mariami Reels Playbook",
+                         },
+                         "description": {
+                             "type": "string",
+                             "title": "Description",
+-                            "description": "Optional short summary of what the playbook contains.",
+-                            "example": "Hooks, CTA rules, and content strategy guidance from Mariami.",
++                            "description": "Optional short summary of the internal reels methodology.",
++                            "example": "Internal reels strategy guidance for hook logic, retention, and CTA structure.",
++                        },
++                        "domain": {
++                            "type": "string",
++                            "title": "Domain",
++                            "description": "Phase 1 currently supports reels only.",
++                            "example": "reels",
++                            "default": "reels",
+                         },
+                         "supported_task_types": {
+                             "type": "string",
+                             "title": "Supported Task Types",
+-                            "description": "Optional comma-separated list or JSON array string. Example: caption,reel_idea,performance_summary",
+-                            "example": "caption,reel_idea,performance_summary",
++                            "description": "Optional comma-separated list or JSON array string. Phase 1 supports reel_idea,reel_script,reel_feedback",
++                            "example": "reel_idea,reel_script,reel_feedback",
++                        },
++                        "scope": {
++                            "type": "string",
++                            "title": "Scope",
++                            "description": "Phase 1 internal knowledge must use system scope.",
++                            "example": "system",
++                            "default": "system",
++                        },
++                        "visibility": {
++                            "type": "string",
++                            "title": "Visibility",
++                            "description": "Phase 1 internal knowledge must remain internal.",
++                            "example": "internal",
++                            "default": "internal",
++                        },
++                        "status": {
++                            "type": "string",
++                            "title": "Status",
++                            "description": "Use active to enable the pack immediately.",
++                            "example": "active",
++                            "default": "active",
+                         },
+                         "files": {
+                             "type": "array",
+@@ -95,8 +126,11 @@
+     response_model=KnowledgePackResponse,
+     responses=STANDARD_ERROR_RESPONSES,
+     openapi_extra=UPLOAD_OPENAPI_EXTRA,
++    include_in_schema=False,
+ )
+ async def upload_knowledge_pack(request: Request):
++    _require_internal_admin_access(request)
++
+     if not MULTIPART_AVAILABLE:
+         raise HTTPException(
+             status_code=400,
+@@ -111,14 +145,15 @@
+             detail="Knowledge pack upload failed: multipart form data could not be parsed",
+         ) from exc
+ 
+-    owner_user_id = " ".join(str(form.get("owner_user_id") or "").split()).strip()
+     title = " ".join(str(form.get("title") or "").split()).strip()
+     description_raw = form.get("description")
+     description = " ".join(str(description_raw or "").split()).strip() or None
++    domain = " ".join(str(form.get("domain") or "reels").split()).strip() or "reels"
++    scope = " ".join(str(form.get("scope") or "system").split()).strip() or "system"
++    visibility = " ".join(str(form.get("visibility") or "internal").split()).strip() or "internal"
++    status = " ".join(str(form.get("status") or "active").split()).strip() or "active"
+     supported_task_types = form.get("supported_task_types")
+ 
+-    if not owner_user_id:
+-        raise HTTPException(status_code=400, detail="owner_user_id is required for knowledge pack upload")
+     if not title:
+         raise HTTPException(status_code=400, detail="title is required for knowledge pack upload")
+ 
+@@ -150,29 +185,52 @@
+     )
+ 
+     return knowledge_pack_service.upload_pack(
+-        owner_user_id=owner_user_id,
++        owner_user_id="system",
+         title=title,
+         description=description,
+         supported_task_types=parsed_supported_task_types,
+         uploaded_files=uploaded_files,
++        scope=scope,
++        domain=domain,
++        visibility=visibility,
++        status=status,
+     )
+ 
+ 
+-@router.get("/{user_id}", response_model=KnowledgePackListResponse, responses=STANDARD_ERROR_RESPONSES)
+-def list_knowledge_packs(user_id: str):
+-    return knowledge_pack_service.list_packs(user_id)
+-
+-
+-@router.post("/{knowledge_pack_id}/activate", response_model=KnowledgePackResponse, responses=STANDARD_ERROR_RESPONSES)
+-def activate_knowledge_pack(knowledge_pack_id: str):
++@router.get("", response_model=KnowledgePackListResponse, responses=STANDARD_ERROR_RESPONSES, include_in_schema=False)
++def list_knowledge_packs(request: Request, domain: str | None = None):
++    _require_internal_admin_access(request)
++    return knowledge_pack_service.list_packs(scope="system", domain=domain, visibility="internal")
++
++
++@router.post(
++    "/{knowledge_pack_id}/activate",
++    response_model=KnowledgePackResponse,
++    responses=STANDARD_ERROR_RESPONSES,
++    include_in_schema=False,
++)
++def activate_knowledge_pack(knowledge_pack_id: str, request: Request):
++    _require_internal_admin_access(request)
+     return knowledge_pack_service.activate_pack(knowledge_pack_id)
+ 
+ 
+-@router.post("/{knowledge_pack_id}/deactivate", response_model=KnowledgePackResponse, responses=STANDARD_ERROR_RESPONSES)
+-def deactivate_knowledge_pack(knowledge_pack_id: str):
++@router.post(
++    "/{knowledge_pack_id}/deactivate",
++    response_model=KnowledgePackResponse,
++    responses=STANDARD_ERROR_RESPONSES,
++    include_in_schema=False,
++)
++def deactivate_knowledge_pack(knowledge_pack_id: str, request: Request):
++    _require_internal_admin_access(request)
+     return knowledge_pack_service.deactivate_pack(knowledge_pack_id)
+ 
+ 
+-@router.delete("/{knowledge_pack_id}", response_model=KnowledgePackDeleteResponse, responses=STANDARD_ERROR_RESPONSES)
+-def delete_knowledge_pack(knowledge_pack_id: str):
++@router.delete(
++    "/{knowledge_pack_id}",
++    response_model=KnowledgePackDeleteResponse,
++    responses=STANDARD_ERROR_RESPONSES,
++    include_in_schema=False,
++)
++def delete_knowledge_pack(knowledge_pack_id: str, request: Request):
++    _require_internal_admin_access(request)
+     return knowledge_pack_service.delete_pack(knowledge_pack_id)
+
+--- C:\Users\GREENC~1\AppData\Local\Temp\agent_route_before_system_reels_phase1.py
++++ backend\app\api\routes\agent.py
+@@ -32,6 +32,7 @@
+ instagram_context_sync_service = InstagramContextSyncService()
+ billing_service = BillingService()
+ instagram_media_service = InstagramMediaService()
++REELS_SYSTEM_KNOWLEDGE_TASK_TYPES = {"reel_idea", "reel_script", "reel_feedback"}
+ 
+ AGENT_CAPABILITIES = AgentCapabilitiesResponse(
+     supported_task_types=[
+@@ -85,7 +86,7 @@
+         "auto_sync": True,
+         "active_account_fallback": True,
+         "generation_history": True,
+-        "knowledge_packs": True,
++        "knowledge_packs": False,
+         "plans_and_limits": True,
+     },
+ )
+@@ -251,10 +252,10 @@
+     sync_skipped: bool | None = None,
+     last_synced_at: str | None = None,
+     used_real_instagram_context: bool = False,
+-    used_knowledge_pack: bool | None = None,
+-    knowledge_pack_id: str | None = None,
+-    retrieved_chunks_count: int | None = None,
+-    knowledge_applied: bool | None = None,
++    used_system_knowledge: bool | None = None,
++    matched_knowledge_domain: str | None = None,
++    matched_knowledge_pack_ids: list[str] | None = None,
++    retrieved_chunk_count: int | None = None,
+ ) -> None:
+     try:
+         generation_history_service.save_item({
+@@ -275,10 +276,10 @@
+             "sync_skipped": sync_skipped,
+             "last_synced_at": last_synced_at,
+             "used_real_instagram_context": used_real_instagram_context,
+-            "used_knowledge_pack": used_knowledge_pack,
+-            "knowledge_pack_id": knowledge_pack_id,
+-            "retrieved_chunks_count": retrieved_chunks_count,
+-            "knowledge_applied": knowledge_applied,
++            "used_system_knowledge": used_system_knowledge,
++            "matched_knowledge_domain": matched_knowledge_domain,
++            "matched_knowledge_pack_ids": list(matched_knowledge_pack_ids or []),
++            "retrieved_chunk_count": retrieved_chunk_count,
+         })
+     except Exception:
+         pass
+@@ -435,10 +436,10 @@
+     sync_skipped: bool | None = None
+     last_synced_at: str | None = None
+     used_real_instagram_context = False
+-    used_knowledge_pack = False
+-    knowledge_pack_id: str | None = None
+-    retrieved_chunks_count = 0
+-    knowledge_applied = False
++    used_system_knowledge = False
++    matched_knowledge_domain: str | None = None
++    matched_knowledge_pack_ids: list[str] = []
++    retrieved_chunk_count = 0
+ 
+     try:
+         if payload.user_id:
+@@ -517,10 +518,10 @@
+             recent_posts_context,
+         )
+ 
+-        if effective_user_id:
++        if effective_user_id and payload.task_type in REELS_SYSTEM_KNOWLEDGE_TASK_TYPES:
+             try:
+-                playbook_context = knowledge_pack_service.retrieve_context(
+-                    owner_user_id=effective_user_id,
++                playbook_context = knowledge_pack_service.retrieve_system_context(
++                    domain="reels",
+                     task_type=payload.task_type,
+                     message=payload.message,
+                     goal=payload.goal,
+@@ -528,13 +529,13 @@
+                     recent_content_context=recent_content_context,
+                     recent_posts_context=recent_posts_context,
+                 )
+-                used_knowledge_pack = bool(playbook_context.get("used_knowledge_pack"))
+-                knowledge_pack_id = playbook_context.get("knowledge_pack_id")
+-                retrieved_chunks_count = int(playbook_context.get("retrieved_chunks_count") or 0)
+-                knowledge_applied = bool(playbook_context.get("knowledge_applied"))
++                used_system_knowledge = bool(playbook_context.get("used_system_knowledge"))
++                matched_knowledge_domain = playbook_context.get("matched_knowledge_domain")
++                matched_knowledge_pack_ids = list(playbook_context.get("matched_knowledge_pack_ids") or [])
++                retrieved_chunk_count = int(playbook_context.get("retrieved_chunk_count") or 0)
+             except Exception as exc:
+                 logger.warning(
+-                    "Knowledge pack retrieval failed user_id=%s account_id=%s task_type=%s error=%s",
++                    "System knowledge retrieval failed user_id=%s account_id=%s task_type=%s error=%s",
+                     effective_user_id,
+                     effective_account_id,
+                     payload.task_type,
+@@ -587,10 +588,10 @@
+             sync_skipped=sync_skipped,
+             last_synced_at=last_synced_at,
+             used_real_instagram_context=used_real_instagram_context,
+-            used_knowledge_pack=used_knowledge_pack,
+-            knowledge_pack_id=knowledge_pack_id,
+-            retrieved_chunks_count=retrieved_chunks_count,
+-            knowledge_applied=knowledge_applied,
++            used_system_knowledge=used_system_knowledge,
++            matched_knowledge_domain=matched_knowledge_domain,
++            matched_knowledge_pack_ids=matched_knowledge_pack_ids,
++            retrieved_chunk_count=retrieved_chunk_count,
+         )
+         raise
+     except RuntimeError as exc:
+@@ -613,10 +614,10 @@
+             sync_skipped=sync_skipped,
+             last_synced_at=last_synced_at,
+             used_real_instagram_context=used_real_instagram_context,
+-            used_knowledge_pack=used_knowledge_pack,
+-            knowledge_pack_id=knowledge_pack_id,
+-            retrieved_chunks_count=retrieved_chunks_count,
+-            knowledge_applied=knowledge_applied,
++            used_system_knowledge=used_system_knowledge,
++            matched_knowledge_domain=matched_knowledge_domain,
++            matched_knowledge_pack_ids=matched_knowledge_pack_ids,
++            retrieved_chunk_count=retrieved_chunk_count,
+         )
+         if str(exc) == "Langflow request timed out":
+             raise HTTPException(status_code=504, detail=str(exc)) from exc
+@@ -639,10 +640,10 @@
+         sync_skipped=sync_skipped,
+         last_synced_at=last_synced_at,
+         used_real_instagram_context=used_real_instagram_context,
+-        used_knowledge_pack=used_knowledge_pack,
+-        knowledge_pack_id=knowledge_pack_id,
+-        retrieved_chunks_count=retrieved_chunks_count,
+-        knowledge_applied=knowledge_applied,
++        used_system_knowledge=used_system_knowledge,
++        matched_knowledge_domain=matched_knowledge_domain,
++        matched_knowledge_pack_ids=matched_knowledge_pack_ids,
++        retrieved_chunk_count=retrieved_chunk_count,
+     )
+ 
+     return AgentChatResponse(
+
+--- C:\Users\GREENC~1\AppData\Local\Temp\langflow_service_before_system_reels_phase1.py
++++ backend\app\services\langflow_service.py
+@@ -199,11 +199,11 @@
+ 
+     def _format_playbook_context(self, playbook_context: dict | None) -> str:
+         if not playbook_context or not playbook_context.get("chunks"):
+-            return "SMM playbook context: not available"
+-
++            return "Internal strategy context: not available"
++
++        domain = str(playbook_context.get("matched_knowledge_domain") or "strategy").strip()
+         lines = [
+-            "SMM playbook context:",
+-            f"Knowledge pack title: {playbook_context.get('knowledge_pack_title', '')}",
++            f"Internal {domain} strategy context:",
+             "Use the following expert strategic guidance when it is relevant:",
+         ]
+ 
+
+--- C:\Users\GREENC~1\AppData\Local\Temp\app_bootstrap_route_before_system_reels_phase1.py
++++ backend\app\api\routes\app_bootstrap.py
+@@ -7,7 +7,6 @@
+ from app.services.connected_accounts_service import ConnectedAccountsService
+ from app.services.instagram_connection_service import InstagramConnectionService
+ from app.services.instagram_context_sync_service import InstagramContextSyncService
+-from app.services.knowledge_pack_service import KnowledgePackService
+ from app.services.profile_context_service import ProfileContextService
+ from app.services.recent_content_context_service import RecentContentContextService
+ from app.services.recent_posts_context_service import RecentPostsContextService
+@@ -18,7 +17,6 @@
+ connected_accounts_service = ConnectedAccountsService()
+ instagram_connection_service = InstagramConnectionService()
+ instagram_context_sync_service = InstagramContextSyncService()
+-knowledge_pack_service = KnowledgePackService()
+ profile_context_service = ProfileContextService()
+ recent_posts_context_service = RecentPostsContextService()
+ recent_content_context_service = RecentContentContextService()
+@@ -81,7 +79,6 @@
+     connected_accounts_count: int,
+     has_complete_context: bool,
+     context_is_fresh: bool,
+-    has_active_knowledge_pack: bool,
+ ) -> list[BootstrapNextAction]:
+     blocking_actions: list[BootstrapNextAction] = []
+ 
+@@ -97,16 +94,10 @@
+     elif not has_complete_context or not context_is_fresh:
+         blocking_actions.append("run_first_sync")
+ 
+-    optional_actions: list[BootstrapNextAction] = []
+-    if instagram_connected and not requires_reconnect and not has_active_knowledge_pack:
+-        optional_actions.append("activate_knowledge_pack")
++    if blocking_actions:
++        return blocking_actions
+ 
+-    if blocking_actions:
+-        return blocking_actions + optional_actions
+-
+-    ready_actions = list(optional_actions)
+-    ready_actions.append("ready_to_generate")
+-    return ready_actions
++    return ["ready_to_generate"]
+ 
+ 
+ @router.get("/bootstrap/{user_id}", response_model=AppBootstrapResponse, responses=STANDARD_ERROR_RESPONSES)
+@@ -153,7 +144,6 @@
+         context_is_fresh = bool(freshness.get("context_was_fresh"))
+         has_complete_context = bool(freshness.get("has_complete_context"))
+ 
+-    active_knowledge_pack = knowledge_pack_service.get_active_pack(user_id)
+     supported_task_types = [
+         capability.task_type
+         for capability in AGENT_CAPABILITIES.supported_task_types
+@@ -173,7 +163,6 @@
+         connected_accounts_count=len(valid_accounts),
+         has_complete_context=has_complete_context,
+         context_is_fresh=context_is_fresh,
+-        has_active_knowledge_pack=bool(active_knowledge_pack),
+     )
+ 
+     return AppBootstrapResponse(
+@@ -195,9 +184,6 @@
+         has_recent_content_context=has_recent_content_context,
+         last_synced_at=last_synced_at,
+         context_is_fresh=context_is_fresh,
+-        has_active_knowledge_pack=bool(active_knowledge_pack),
+-        active_knowledge_pack_id=(active_knowledge_pack or {}).get("knowledge_pack_id"),
+-        active_knowledge_pack_title=(active_knowledge_pack or {}).get("title"),
+         supported_task_types=supported_task_types,
+         structured_output_task_types=structured_output_task_types,
+         auto_sync_supported=AGENT_CAPABILITIES.features.auto_sync,
+
+--- C:\Users\GREENC~1\AppData\Local\Temp\app_bootstrap_schema_before_system_reels_phase1.py
++++ backend\app\schemas\app_bootstrap.py
+@@ -10,7 +10,6 @@
+     "upgrade_plan",
+     "connect_instagram",
+     "reconnect_instagram",
+-    "activate_knowledge_pack",
+     "run_first_sync",
+     "ready_to_generate",
+ ]
+@@ -43,12 +42,10 @@
+                     "has_recent_content_context": True,
+                     "last_synced_at": "2026-04-22T08:30:00+00:00",
+                     "context_is_fresh": True,
+-                    "has_active_knowledge_pack": True,
+-                    "active_knowledge_pack_id": "kp_9a2f0c4d7e11",
+-                    "active_knowledge_pack_title": "Mariami SMM Playbook",
+                     "supported_task_types": [
+                         "reel_idea",
+                         "reel_script",
++                        "reel_feedback",
+                         "caption",
+                         "carousel",
+                         "profile_audit",
+@@ -59,6 +56,7 @@
+                     "structured_output_task_types": [
+                         "reel_idea",
+                         "reel_script",
++                        "reel_feedback",
+                         "caption",
+                         "carousel",
+                         "profile_audit",
+@@ -91,12 +89,10 @@
+                     "has_recent_content_context": False,
+                     "last_synced_at": None,
+                     "context_is_fresh": False,
+-                    "has_active_knowledge_pack": False,
+-                    "active_knowledge_pack_id": None,
+-                    "active_knowledge_pack_title": None,
+                     "supported_task_types": [
+                         "reel_idea",
+                         "reel_script",
++                        "reel_feedback",
+                         "caption",
+                         "carousel",
+                         "profile_audit",
+@@ -107,6 +103,7 @@
+                     "structured_output_task_types": [
+                         "reel_idea",
+                         "reel_script",
++                        "reel_feedback",
+                         "caption",
+                         "carousel",
+                         "profile_audit",
+@@ -143,9 +140,6 @@
+     has_recent_content_context: bool
+     last_synced_at: str | None = None
+     context_is_fresh: bool
+-    has_active_knowledge_pack: bool
+-    active_knowledge_pack_id: str | None = None
+-    active_knowledge_pack_title: str | None = None
+     supported_task_types: list[TaskType] = Field(default_factory=list)
+     structured_output_task_types: list[TaskType] = Field(default_factory=list)
+     auto_sync_supported: bool
+
+--- C:\Users\GREENC~1\AppData\Local\Temp\generation_history_schema_before_system_reels_phase1.py
++++ backend\app\schemas\generation_history.py
+@@ -21,7 +21,3 @@
+     sync_skipped: bool | None = None
+     last_synced_at: str | None = None
+     used_real_instagram_context: bool | None = None
+-    used_knowledge_pack: bool | None = None
+-    knowledge_pack_id: str | None = None
+-    retrieved_chunks_count: int | None = None
+-    knowledge_applied: bool | None = None
+
+--- C:\Users\GREENC~1\AppData\Local\Temp\knowledge_pack_schema_before_system_reels_phase1.py
++++ backend\app\schemas\knowledge_pack.py
+@@ -6,6 +6,8 @@
+ 
+ 
+ KnowledgePackStatus = Literal["active", "inactive"]
++KnowledgePackScope = Literal["system", "user"]
++KnowledgePackVisibility = Literal["internal", "user"]
+ 
+ 
+ class KnowledgePackFileMetadata(BaseModel):
+@@ -27,19 +29,22 @@
+             "examples": [
+                 {
+                     "knowledge_pack_id": "kp_01",
+-                    "owner_user_id": "user-1",
+-                    "title": "SMM Growth Playbook",
+-                    "description": "Expert guidance for hooks, CTA structure, and content planning.",
+-                    "status": "inactive",
++                    "owner_user_id": "system",
++                    "title": "Mariami Reels Playbook",
++                    "description": "Internal reels methodology for hooks, retention, and CTA clarity.",
++                    "scope": "system",
++                    "domain": "reels",
++                    "visibility": "internal",
++                    "status": "active",
+                     "supported_task_types": [
+                         "reel_idea",
+-                        "caption",
+-                        "performance_summary",
++                        "reel_script",
++                        "reel_feedback",
+                     ],
+                     "uploaded_files": [
+                         {
+                             "file_id": "kpf_01",
+-                            "file_name": "growth-playbook.md",
++                            "file_name": "mariami-reels-playbook.md",
+                             "content_type": "text/markdown",
+                             "extension": ".md",
+                             "file_size_bytes": 18244,
+@@ -50,35 +55,7 @@
+                     "total_chunks": 7,
+                     "created_at": "2026-04-21T10:00:00+00:00",
+                     "updated_at": "2026-04-21T10:00:00+00:00",
+-                },
+-                {
+-                    "knowledge_pack_id": "kp_02",
+-                    "owner_user_id": "user-1",
+-                    "title": "Agency Content System",
+-                    "description": "Approved strategic rules for higher-ticket Instagram content.",
+-                    "status": "active",
+-                    "supported_task_types": [
+-                        "reel_idea",
+-                        "reel_script",
+-                        "caption",
+-                        "carousel",
+-                        "content_plan",
+-                    ],
+-                    "uploaded_files": [
+-                        {
+-                            "file_id": "kpf_02",
+-                            "file_name": "agency-system.pdf",
+-                            "content_type": "application/pdf",
+-                            "extension": ".pdf",
+-                            "file_size_bytes": 54211,
+-                            "chunk_count": 11,
+-                            "uploaded_at": "2026-04-21T12:00:00+00:00",
+-                        }
+-                    ],
+-                    "total_chunks": 11,
+-                    "created_at": "2026-04-21T12:00:00+00:00",
+-                    "updated_at": "2026-04-21T12:04:00+00:00",
+-                },
++                }
+             ]
+         },
+     )
+@@ -87,6 +64,9 @@
+     owner_user_id: str
+     title: str
+     description: str | None = None
++    scope: KnowledgePackScope
++    domain: str | None = None
++    visibility: KnowledgePackVisibility
+     status: KnowledgePackStatus
+     supported_task_types: list[TaskType] = Field(default_factory=list)
+     uploaded_files: list[KnowledgePackFileMetadata] = Field(default_factory=list)
+@@ -100,40 +80,47 @@
+         extra="forbid",
+         json_schema_extra={
+             "example": {
+-                "user_id": "user-1",
++                "scope": "system",
++                "domain": "reels",
++                "visibility": "internal",
+                 "knowledge_packs": [
+                     {
+-                        "knowledge_pack_id": "kp_02",
+-                        "owner_user_id": "user-1",
+-                        "title": "Agency Content System",
+-                        "description": "Approved strategic rules for higher-ticket Instagram content.",
++                        "knowledge_pack_id": "kp_01",
++                        "owner_user_id": "system",
++                        "title": "Mariami Reels Playbook",
++                        "description": "Internal reels methodology for hooks, retention, and CTA clarity.",
++                        "scope": "system",
++                        "domain": "reels",
++                        "visibility": "internal",
+                         "status": "active",
+                         "supported_task_types": [
+                             "reel_idea",
+-                            "caption",
+-                            "carousel",
++                            "reel_script",
++                            "reel_feedback",
+                         ],
+                         "uploaded_files": [
+                             {
+-                                "file_id": "kpf_02",
+-                                "file_name": "agency-system.pdf",
+-                                "content_type": "application/pdf",
+-                                "extension": ".pdf",
+-                                "file_size_bytes": 54211,
+-                                "chunk_count": 11,
+-                                "uploaded_at": "2026-04-21T12:00:00+00:00",
++                                "file_id": "kpf_01",
++                                "file_name": "mariami-reels-playbook.md",
++                                "content_type": "text/markdown",
++                                "extension": ".md",
++                                "file_size_bytes": 18244,
++                                "chunk_count": 7,
++                                "uploaded_at": "2026-04-21T10:00:00+00:00",
+                             }
+                         ],
+-                        "total_chunks": 11,
+-                        "created_at": "2026-04-21T12:00:00+00:00",
+-                        "updated_at": "2026-04-21T12:04:00+00:00",
++                        "total_chunks": 7,
++                        "created_at": "2026-04-21T10:00:00+00:00",
++                        "updated_at": "2026-04-21T10:00:00+00:00",
+                     }
+                 ],
+             }
+         },
+     )
+ 
+-    user_id: str
++    scope: KnowledgePackScope | None = None
++    domain: str | None = None
++    visibility: KnowledgePackVisibility | None = None
+     knowledge_packs: list[KnowledgePackResponse] = Field(default_factory=list)
+ 
+ 
+@@ -142,7 +129,7 @@
+         extra="forbid",
+         json_schema_extra={
+             "example": {
+-                "knowledge_pack_id": "kp_02",
++                "knowledge_pack_id": "kp_01",
+                 "deleted": True,
+             }
+         },
+
+--- C:\Users\GREENC~1\AppData\Local\Temp\agent_schema_before_system_reels_phase1.py
++++ backend\app\schemas\agent.py
+@@ -505,7 +505,7 @@
+                     "auto_sync": True,
+                     "active_account_fallback": True,
+                     "generation_history": True,
+-                    "knowledge_packs": True,
++                    "knowledge_packs": False,
+                     "plans_and_limits": True,
+                 },
+             }
+
+--- C:\Users\GREENC~1\AppData\Local\Temp\error_handling_before_system_reels_phase1.py
++++ backend\app\error_handling.py
+@@ -93,6 +93,9 @@
+ 
+     if "requested reel was not found" in normalized_message:
+         return "reel_not_found", "Requested Reel was not found"
++
++    if "internal admin access is required" in normalized_message:
++        return "internal_access_required", "Internal admin access is required"
+ 
+     if "must be reconnected" in normalized_message or "saved meta connection is no longer valid" in normalized_message:
+         return "reconnect_required", "Instagram account must be reconnected."
+
+--- dev/null
++++ backend\docs\system_reels_knowledge_phase1.md
+@@ -0,0 +1,61 @@
++# System Reels Knowledge Phase 1
++
++## What This Does
++
++This backend now uses a hidden internal knowledge layer for reels-related agent tasks only.
++End users do not see knowledge-pack routes, pack names, uploaded files, or retrieval snippets.
++
++Supported task types in phase 1:
++
++- `reel_idea`
++- `reel_script`
++- `reel_feedback`
++
++Non-reels task types do not use the system knowledge layer yet.
++
++## Internal Upload Flow
++
++Set an internal admin key in the backend environment:
++
++```env
++INTERNAL_ADMIN_KEY=your-internal-admin-key
++```
++
++Upload internal reels knowledge through the hidden admin route:
++
++```text
++POST /api/v1/internal/knowledge-packs/upload
++Header: X-Internal-Admin-Key: <INTERNAL_ADMIN_KEY>
++Content-Type: multipart/form-data
++```
++
++Recommended form fields:
++
++- `title`: internal pack title
++- `description`: optional description
++- `domain`: `reels`
++- `supported_task_types`: `reel_idea,reel_script,reel_feedback`
++- `scope`: `system`
++- `visibility`: `internal`
++- `status`: `active`
++- `files`: one or more `.txt`, `.md`, `.pdf`, or `.docx` files
++
++## Runtime Behavior
++
++During `POST /api/v1/agent/chat`:
++
++1. If `task_type` is reels-related, the backend looks for active internal system knowledge where `domain = reels`.
++2. Relevant chunks are retrieved and injected into the generation prompt.
++3. If no active reels knowledge exists, generation falls back safely to the existing behavior.
++4. If retrieval fails, generation still continues without crashing.
++
++## Internal Observability
++
++Generation history storage may include internal-only metadata such as:
++
++- `used_system_knowledge`
++- `matched_knowledge_domain`
++- `matched_knowledge_pack_ids`
++- `retrieved_chunk_count`
++
++These fields are kept internal and are not returned from the public generation-history endpoint.
+
+--- dev/null
++++ backend\tests\test_system_reels_knowledge_phase1.py
+@@ -0,0 +1,245 @@
++import sys
++from pathlib import Path
++
++import pytest
++from fastapi.testclient import TestClient
++
++
++PROJECT_ROOT = Path(__file__).resolve().parents[1]
++if str(PROJECT_ROOT) not in sys.path:
++    sys.path.insert(0, str(PROJECT_ROOT))
++
++from app.main import app  # noqa: E402
++from app.api.routes import agent as agent_route  # noqa: E402
++from app.api.routes import knowledge_packs as knowledge_pack_route  # noqa: E402
++from app.services.knowledge_pack_service import KnowledgePackService  # noqa: E402
++
++
++INTERNAL_HEADERS = {"X-Internal-Admin-Key": "test-internal-key"}
++
++
++@pytest.fixture()
++def client(monkeypatch, tmp_path):
++    monkeypatch.setenv("INTERNAL_ADMIN_KEY", INTERNAL_HEADERS["X-Internal-Admin-Key"])
++
++    knowledge_service = KnowledgePackService(
++        data_file=tmp_path / "knowledge_packs.json",
++        chunks_file=tmp_path / "knowledge_pack_chunks.json",
++        storage_dir=tmp_path / "knowledge_packs_files",
++    )
++    monkeypatch.setattr(knowledge_pack_route, "knowledge_pack_service", knowledge_service)
++    monkeypatch.setattr(agent_route, "knowledge_pack_service", knowledge_service)
++
++    captured_contexts: list[dict] = []
++
++    monkeypatch.setattr(agent_route.billing_service, "enforce_agent_access", lambda user_id, task_type: {"current_plan": "pro"})
++    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id: None)
++    monkeypatch.setattr(agent_route.connected_accounts_service, "resolve_account_id", lambda user_id, account_id=None: account_id or "acct-1")
++    monkeypatch.setattr(agent_route.connected_accounts_service, "find_user_id_by_account_id", lambda account_id: "user-1")
++    monkeypatch.setattr(agent_route.profile_context_service, "get_context", lambda account_id: {
++        "brand_name": "Brand",
++        "niche": "beauty",
++        "target_audience": "women 24-35",
++        "brand_voice": "direct",
++        "bio": "Helping creators convert views into DMs",
++        "content_focus": ["reels"],
++        "strengths": ["clear offer"],
++        "weak_points": ["slow hooks"],
++    })
++    monkeypatch.setattr(agent_route.recent_posts_context_service, "get_context", lambda account_id: {
++        "posts": [
++            {"post_id": "p1", "content_type": "REEL", "topic": "hooks", "caption": "Better hooks", "views": 100, "likes": 10, "comments": 1, "saves": 2},
++        ]
++    })
++    monkeypatch.setattr(agent_route.recent_content_context_service, "get_context", lambda account_id: {
++        "top_formats": ["Reels"],
++        "best_topics": ["hook logic"],
++        "weak_topics": ["generic intros"],
++        "best_ctas": ["DM CTA"],
++        "weak_ctas": ["follow for more"],
++        "notes": ["retention drops after the first second"],
++    })
++    monkeypatch.setattr(agent_route.link_context_service, "extract_context", lambda link: {
++        "link": link,
++        "detected_platform": "instagram",
++        "content_type": "reel",
++        "summary": "Public Reel summary",
++        "hook_style": "problem-first",
++        "source_patterns": ["direct hook", "proof moment"],
++    })
++    monkeypatch.setattr(agent_route.instagram_media_service, "get_media", lambda user_id, account_id, limit=20: {
++        "items": [
++            {
++                "media_id": "m1",
++                "media_type": "REEL",
++                "caption": "Current reel",
++                "permalink": "https://www.instagram.com/reel/example/",
++                "timestamp": "2026-04-27T10:00:00+00:00",
++                "like_count": 10,
++                "comments_count": 2,
++                "is_reel": True,
++            }
++        ]
++    })
++    monkeypatch.setattr(agent_route.instagram_media_service, "get_media_item", lambda user_id, media_id, account_id=None: {
++        "media_id": media_id,
++        "media_type": "REEL",
++        "caption": "Current reel",
++        "permalink": "https://www.instagram.com/reel/example/",
++        "timestamp": "2026-04-27T10:00:00+00:00",
++        "like_count": 10,
++        "comments_count": 2,
++        "is_reel": True,
++    })
++    monkeypatch.setattr(agent_route.agent_response_formatter_service, "normalize_reply", lambda task_type, reply: {
++        "reply": reply,
++        "parse_status": "raw_only",
++        "structured_output": None,
++    })
++
++    def fake_run_agent(**kwargs):
++        captured_contexts.append({
++            "task_type": kwargs.get("task_type"),
++            "playbook_context": kwargs.get("playbook_context"),
++        })
++        return {
++            "reply": f"{kwargs.get('task_type')} ok",
++            "account_id": kwargs.get("account_id"),
++        }
++
++    monkeypatch.setattr(agent_route.langflow_service, "run_agent", fake_run_agent)
++
++    test_client = TestClient(app)
++    test_client.captured_contexts = captured_contexts
++    test_client.knowledge_service = knowledge_service
++    return test_client
++
++
++def _upload_internal_reels_pack(client: TestClient, *, status: str = "active") -> dict:
++    response = client.post(
++        "/api/v1/internal/knowledge-packs/upload",
++        headers=INTERNAL_HEADERS,
++        data={
++            "title": "Mariami Reels Playbook",
++            "description": "Internal reels methodology",
++            "domain": "reels",
++            "supported_task_types": "reel_idea,reel_script,reel_feedback",
++            "scope": "system",
++            "visibility": "internal",
++            "status": status,
++        },
++        files=[
++            ("files", ("mariami-reels.md", b"# Hooks\nStart with tension.\n\n# CTA\nUse one CTA.", "text/markdown")),
++        ],
++    )
++    assert response.status_code == 200, response.text
++    return response.json()
++
++
++def test_system_reels_knowledge_can_be_uploaded_and_activated(client: TestClient):
++    uploaded = _upload_internal_reels_pack(client, status="inactive")
++    assert uploaded["scope"] == "system"
++    assert uploaded["domain"] == "reels"
++    assert uploaded["visibility"] == "internal"
++    assert uploaded["status"] == "inactive"
++
++    activate_response = client.post(
++        f"/api/v1/internal/knowledge-packs/{uploaded['knowledge_pack_id']}/activate",
++        headers=INTERNAL_HEADERS,
++    )
++    assert activate_response.status_code == 200, activate_response.text
++    activated = activate_response.json()
++    assert activated["status"] == "active"
++
++
++@pytest.mark.parametrize(
++    ("task_type", "payload_overrides"),
++    [
++        ("reel_idea", {}),
++        ("reel_script", {}),
++        ("reel_feedback", {"link": "https://www.instagram.com/reel/example/"}),
++    ],
++)
++def test_reels_tasks_use_active_system_knowledge(client: TestClient, task_type: str, payload_overrides: dict):
++    _upload_internal_reels_pack(client)
++
++    payload = {
++        "message": f"Help me with {task_type}",
++        "task_type": task_type,
++        "user_id": "user-1",
++        "auto_sync": False,
++    }
++    payload.update(payload_overrides)
++
++    response = client.post("/api/v1/agent/chat", json=payload)
++    assert response.status_code == 200, response.text
++    assert response.json()["reply"] == f"{task_type} ok"
++
++    captured = client.captured_contexts[-1]
++    playbook_context = captured["playbook_context"]
++    assert playbook_context is not None
++    assert playbook_context["used_system_knowledge"] is True
++    assert playbook_context["matched_knowledge_domain"] == "reels"
++    assert playbook_context["matched_knowledge_pack_ids"]
++    assert playbook_context["retrieved_chunk_count"] > 0
++
++
++@pytest.mark.parametrize("task_type", ["caption", "carousel"])
++def test_non_reels_tasks_do_not_use_reels_system_knowledge(client: TestClient, task_type: str):
++    _upload_internal_reels_pack(client)
++
++    response = client.post("/api/v1/agent/chat", json={
++        "message": f"Help me with {task_type}",
++        "task_type": task_type,
++        "user_id": "user-1",
++        "auto_sync": False,
++    })
++    assert response.status_code == 200, response.text
++
++    captured = client.captured_contexts[-1]
++    assert captured["playbook_context"] is None
++
++
++def test_end_user_cannot_inspect_internal_system_knowledge(client: TestClient):
++    _upload_internal_reels_pack(client)
++
++    public_route_response = client.get("/api/v1/knowledge-packs/user-1")
++    assert public_route_response.status_code == 404
++
++    no_header_response = client.get("/api/v1/internal/knowledge-packs")
++    assert no_header_response.status_code == 403
++
++
++def test_reels_tasks_fallback_when_no_system_knowledge_exists(client: TestClient):
++    response = client.post("/api/v1/agent/chat", json={
++        "message": "Need reel ideas",
++        "task_type": "reel_idea",
++        "user_id": "user-1",
++        "auto_sync": False,
++    })
++    assert response.status_code == 200, response.text
++
++    captured = client.captured_contexts[-1]
++    assert captured["playbook_context"] is not None
++    assert captured["playbook_context"]["used_system_knowledge"] is False
++    assert captured["playbook_context"]["retrieved_chunk_count"] == 0
++
++
++def test_reels_tasks_fallback_when_system_retrieval_fails(client: TestClient, monkeypatch):
++    _upload_internal_reels_pack(client)
++
++    def broken_retrieval(**kwargs):
++        raise RuntimeError("retrieval failed")
++
++    monkeypatch.setattr(agent_route.knowledge_pack_service, "retrieve_system_context", broken_retrieval)
++
++    response = client.post("/api/v1/agent/chat", json={
++        "message": "Need reel ideas",
++        "task_type": "reel_idea",
++        "user_id": "user-1",
++        "auto_sync": False,
++    })
++    assert response.status_code == 200, response.text
++
++    captured = client.captured_contexts[-1]
++    assert captured["playbook_context"] is None
