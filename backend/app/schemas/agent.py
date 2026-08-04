@@ -92,6 +92,16 @@ class CarouselSlideItem(BaseModel):
     headline: str | None = None
     body: str | None = None
 
+    # Imagery. All optional and appended after the original three fields, so a
+    # text-only carousel and any existing consumer keep working unchanged.
+    #
+    # image_prompt is art direction for the background only: it must never ask
+    # for text in the image. Slide copy is composited in code because image
+    # models render text unreliably, Georgian especially.
+    image_prompt: str | None = None
+    image_url: str | None = None
+    template_id: str | None = None
+
 
 class CarouselStructuredOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")

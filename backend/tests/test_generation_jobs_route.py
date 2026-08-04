@@ -37,16 +37,18 @@ def client(monkeypatch, tmp_path):
     test_client = TestClient(app)
     test_client.job_service = job_service
     test_client.billing_service = billing_service
-    # Bound to the same handler registry the app uses, but stepped by hand so
+    # Copied from the app's own registry rather than rebuilt, so a job kind added
+    # to production can't silently go untested here. Stepped by hand so
     # assertions never race a background thread.
-    test_client.worker = JobWorker(
-        job_service, handlers={jobs_route.AGENT_GENERATION: jobs_route.run_agent_generation}
-    )
+    test_client.worker = JobWorker(job_service, handlers=dict(jobs_route.job_worker.handlers))
     return test_client
 
 
 def _create(client, **overrides):
-    body = {"user_id": "jobs-user", "task_type": "carousel", "message": "გააკეთე კარუსელი"}
+    # content_plan, not carousel: these tests cover the generic job contract, and
+    # a carousel now routes to the render pipeline (see test_carousel_pipeline).
+    # It is still a pro-only task, which keeps the entitlement case below honest.
+    body = {"user_id": "jobs-user", "task_type": "content_plan", "message": "მომეცი გეგმა"}
     body.update(overrides)
     return client.post("/api/v1/generation-jobs", json=body)
 
@@ -154,7 +156,7 @@ def test_the_app_lifespan_actually_runs_queued_jobs(monkeypatch):
     with TestClient(app) as live_client:
         created = live_client.post(
             "/api/v1/generation-jobs",
-            json={"user_id": "lifespan-user", "task_type": "carousel", "message": "hi"},
+            json={"user_id": "lifespan-user", "task_type": "content_plan", "message": "hi"},
         )
         assert created.status_code == 202
         job_id = created.json()["job_id"]

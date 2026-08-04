@@ -87,6 +87,7 @@ _TEST_DEFAULTS = {
     # must not create or mutate production data.
     "BILLING_DB_PATH": str(_TEST_STATE_DIR / "billing.sqlite3"),
     "JOBS_DB_PATH": str(_TEST_STATE_DIR / "jobs.sqlite3"),
+    "CAROUSEL_MEDIA_DIR": str(_TEST_STATE_DIR / "carousel_media"),
     # The background worker is started by the app lifespan. Tests step the
     # worker by hand so assertions cannot race a thread.
     "JOB_WORKER_ENABLED": "false",

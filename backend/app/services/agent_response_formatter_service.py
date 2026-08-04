@@ -7,6 +7,11 @@ from app.schemas.agent import validate_structured_output_payload
 
 logger = logging.getLogger(__name__)
 
+# Instagram accepts at most 20 media in one carousel, so this is the hard
+# product-wide ceiling. The per-request count comes from the caller and is
+# bounded by the plan tier; this only stops the parser short of an absurd value.
+MAX_CAROUSEL_SLIDES = 20
+
 
 class AgentResponseFormatterService:
     def __init__(self):
@@ -129,11 +134,10 @@ class AgentResponseFormatterService:
             ],
             "carousel": [
                 "Title:",
-                "Slide 1:",
-                "Slide 2:",
-                "Slide 3:",
-                "Slide 4:",
-                "Slide 5:",
+                # Generated rather than listed: the slide count is driven by the
+                # request and the plan tier, so a hardcoded list silently capped
+                # every carousel at five regardless of what was asked for.
+                *[f"Slide {n}:" for n in range(1, MAX_CAROUSEL_SLIDES + 1)],
                 "Final CTA slide:",
             ],
             "caption": [
@@ -1337,7 +1341,7 @@ class AgentResponseFormatterService:
 
         section_map = {section["heading"]: section["body"] for section in sections if section["body"]}
         slides = []
-        for slide_number in range(1, 6):
+        for slide_number in range(1, MAX_CAROUSEL_SLIDES + 1):
             slide_text = section_map.get(f"Slide {slide_number}:")
             if slide_text:
                 headline, body = self._split_headline_and_body(slide_text)

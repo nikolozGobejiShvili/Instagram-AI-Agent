@@ -137,6 +137,25 @@ class LangflowService:
             "Avoid literal translations, awkward metaphors, and nonsense phrases in Georgian content.",
         ])
 
+    DEFAULT_CAROUSEL_SLIDES = 5
+
+    def _carousel_output_format(self, slide_count: int | None = None) -> str:
+        """Build the carousel heading contract for a given slide count.
+
+        The parser accepts up to ``MAX_CAROUSEL_SLIDES``; asking the model for
+        more than that would produce slides that are generated, paid for, and
+        then silently dropped.
+        """
+        from app.services.agent_response_formatter_service import MAX_CAROUSEL_SLIDES
+
+        count = slide_count or self.DEFAULT_CAROUSEL_SLIDES
+        count = max(2, min(int(count), MAX_CAROUSEL_SLIDES))
+        return "\n".join([
+            "Title:",
+            *[f"Slide {n}:" for n in range(1, count + 1)],
+            "Final CTA slide:",
+        ])
+
     def _output_format_instruction(self, task_type: str) -> str:
         formats = {
             "reel_idea": "\n".join([
@@ -171,15 +190,10 @@ class LangflowService:
                 "Caption:",
                 "CTA:",
             ]),
-            "carousel": "\n".join([
-                "Title:",
-                "Slide 1:",
-                "Slide 2:",
-                "Slide 3:",
-                "Slide 4:",
-                "Slide 5:",
-                "Final CTA slide:",
-            ]),
+            # Slide headings are generated from the requested count rather than
+            # fixed at five, so the prompt contract, the parser and the tier
+            # limit all agree on how many slides a carousel has.
+            "carousel": self._carousel_output_format(),
             "profile_audit": "\n".join([
                 "What works:",
                 "What is weak:",

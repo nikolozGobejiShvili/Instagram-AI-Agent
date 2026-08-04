@@ -33,6 +33,7 @@ billing_service = BillingService()
 llm_service = LLMService()
 
 AGENT_GENERATION = "agent_generation"
+CAROUSEL_GENERATION = "carousel_generation"
 
 _GENERATION_FIELDS = (
     "message",
@@ -58,7 +59,40 @@ def run_agent_generation(payload: dict) -> dict:
     return result
 
 
-job_worker = JobWorker(job_service, handlers={AGENT_GENERATION: run_agent_generation})
+def run_carousel_generation(payload: dict) -> dict:
+    """Generate a carousel: copy and art direction, then backgrounds, then slides.
+
+    This is the reason the job layer exists. One text call plus one image
+    generation per slide runs for tens of seconds -- far past what a synchronous
+    request can hold without timing out the caller and occupying a threadpool
+    worker the whole time.
+    """
+    from app.services.carousel_pipeline_service import CarouselPipelineService
+
+    generation = llm_service.run_agent(**{k: payload.get(k) for k in _GENERATION_FIELDS})
+
+    structured = generation.get("structured_output")
+    if not isinstance(structured, dict) or not structured.get("slides"):
+        # No slides parsed means there is nothing to render. Fail the job rather
+        # than storing an empty carousel that looks successful.
+        raise ValueError("Carousel generation did not produce any slides")
+
+    rendered = CarouselPipelineService().render_carousel(
+        structured_output=structured,
+        generate_images=bool(payload.get("generate_images", True)),
+    )
+
+    billing_service.increment_generation_usage(payload["user_id"])
+    return {**generation, "structured_output": rendered}
+
+
+job_worker = JobWorker(
+    job_service,
+    handlers={
+        AGENT_GENERATION: run_agent_generation,
+        CAROUSEL_GENERATION: run_carousel_generation,
+    },
+)
 
 
 @router.post(
@@ -73,9 +107,12 @@ def create_generation_job(payload: GenerationJobCreateRequest, response: Respons
     # that fails later.
     billing_service.enforce_agent_access(payload.user_id, payload.task_type)
 
+    # A carousel needs the render pipeline; everything else is text only.
+    kind = CAROUSEL_GENERATION if payload.task_type == "carousel" else AGENT_GENERATION
+
     job = job_service.enqueue(
         user_id=payload.user_id,
-        kind=AGENT_GENERATION,
+        kind=kind,
         payload=payload.model_dump(),
     )
     response.headers["Location"] = f"{router.prefix}/{job['job_id']}"

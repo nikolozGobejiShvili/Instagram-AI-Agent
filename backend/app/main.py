@@ -28,6 +28,7 @@ from app.api.routes.recent_posts_context import router as recent_posts_context_r
 from app.api.routes.recent_content_context import router as recent_content_context_router
 from app.api.routes.agent import router as agent_router
 from app.api.routes.profile_context import router as profile_context_router
+from app.api.routes.carousel_media import router as carousel_media_router  # noqa: E402
 from app.api.routes.generation_jobs import job_worker, router as generation_jobs_router  # noqa: E402
 from app.error_handling import http_exception_handler, request_validation_handler, unhandled_exception_handler  # noqa: E402
 from app.api.routes.link_context import router as link_context_router  # noqa: E402
@@ -64,6 +65,7 @@ app.include_router(agent_router)
 app.include_router(app_bootstrap_router)
 app.include_router(billing_router)
 app.include_router(connected_accounts_router)
+app.include_router(carousel_media_router)
 app.include_router(generation_history_router)
 app.include_router(generation_jobs_router)
 app.include_router(internal_generation_debug_router)
