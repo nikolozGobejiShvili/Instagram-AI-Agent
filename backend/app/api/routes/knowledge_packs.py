@@ -1,9 +1,9 @@
 import json
 import importlib.util
-import os
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.api.internal_auth import INTERNAL_ADMIN_HEADER, require_internal_admin_access
 from app.schemas.api_error import STANDARD_ERROR_RESPONSES
 from app.schemas.knowledge_pack import (
     KnowledgePackDeleteResponse,
@@ -18,14 +18,11 @@ router = APIRouter(prefix="/api/v1/internal/knowledge-packs", tags=["internal-kn
 knowledge_pack_service = KnowledgePackService()
 langflow_service = LangflowService()
 MULTIPART_AVAILABLE = bool(importlib.util.find_spec("multipart"))
-INTERNAL_ADMIN_HEADER = "X-Internal-Admin-Key"
 
-
-def _require_internal_admin_access(request: Request) -> None:
-    expected_key = os.getenv("INTERNAL_ADMIN_KEY", "").strip()
-    provided_key = request.headers.get(INTERNAL_ADMIN_HEADER, "").strip()
-    if not expected_key or provided_key != expected_key:
-        raise HTTPException(status_code=403, detail="Internal admin access is required")
+# The guard now lives in app.api.internal_auth so billing and maintenance share
+# one implementation. Kept under the original private name because the handlers
+# below call it directly.
+_require_internal_admin_access = require_internal_admin_access
 
 
 def _parse_supported_task_types(value: str | None) -> list[str]:
