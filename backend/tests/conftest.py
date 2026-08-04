@@ -76,14 +76,20 @@ for _name in [k for k in os.environ if k.startswith(_PURGED_PREFIXES) or k in _P
 # short-circuits when there is no ingestion flow id, which is what keeps a
 # knowledge-pack upload from reaching for a live Langflow server. Tests that
 # exercise a flow set the id they need themselves.
+_TEST_STATE_DIR = pathlib.Path(tempfile.mkdtemp(prefix="ig_agent_test_state_"))
+
 _TEST_DEFAULTS = {
     "LANGFLOW_API_KEY": "test-langflow-key",
     "LANGFLOW_BASE_URL": "http://langflow.invalid",
-    # Services are constructed at module import time, so BillingService would
-    # otherwise open (and migrate into) the real backend/app/data store the
-    # moment a test imports the app. Point it at a throwaway directory instead:
-    # a test run must not create or mutate production data.
-    "BILLING_DB_PATH": str(pathlib.Path(tempfile.mkdtemp(prefix="ig_agent_test_billing_")) / "billing.sqlite3"),
+    # Services are constructed at module import time, so these would otherwise
+    # open (and migrate into) the real backend/app/data store the moment a test
+    # imports the app. Point them at a throwaway directory instead: a test run
+    # must not create or mutate production data.
+    "BILLING_DB_PATH": str(_TEST_STATE_DIR / "billing.sqlite3"),
+    "JOBS_DB_PATH": str(_TEST_STATE_DIR / "jobs.sqlite3"),
+    # The background worker is started by the app lifespan. Tests step the
+    # worker by hand so assertions cannot race a thread.
+    "JOB_WORKER_ENABLED": "false",
 }
 for _key, _value in _TEST_DEFAULTS.items():
     os.environ.setdefault(_key, _value)
