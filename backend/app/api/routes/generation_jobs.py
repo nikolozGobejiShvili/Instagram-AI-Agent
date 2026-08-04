@@ -21,8 +21,10 @@ from app.schemas.generation_job import (
     GenerationJobResponse,
 )
 from app.services.billing_service import BillingService
+from app.services.connected_accounts_service import ConnectedAccountsService
 from app.services.job_service import JobService, JobWorker
 from app.services.llm_service import LLMService
+from app.services.marketing_brief_service import MarketingBriefService
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,8 @@ router = APIRouter(prefix="/api/v1/generation-jobs", tags=["generation-jobs"])
 job_service = JobService()
 billing_service = BillingService()
 llm_service = LLMService()
+marketing_brief_service = MarketingBriefService()
+connected_accounts_service = ConnectedAccountsService()
 
 AGENT_GENERATION = "agent_generation"
 CAROUSEL_GENERATION = "carousel_generation"
@@ -46,6 +50,27 @@ _GENERATION_FIELDS = (
 )
 
 
+def _generation_kwargs(payload: dict) -> dict:
+    """Assemble generation inputs, including the customer's stored brief.
+
+    The brief is loaded here rather than passed by the caller: a goal the
+    customer stated once should shape every task without the website having to
+    remember to resend it.
+    """
+    kwargs = {k: payload.get(k) for k in _GENERATION_FIELDS}
+    account_id = payload.get("account_id")
+    try:
+        brief = marketing_brief_service.get_brief(
+            payload["user_id"],
+            connected_accounts_service.resolve_account_id(payload["user_id"], account_id),
+        )
+        kwargs["brief_context"] = marketing_brief_service.as_prompt_context(brief)
+    except Exception as exc:  # noqa: BLE001 - a missing brief must not fail generation
+        logger.warning("Could not load marketing brief: %s", exc)
+        kwargs["brief_context"] = None
+    return kwargs
+
+
 def run_agent_generation(payload: dict) -> dict:
     """Execute one queued generation.
 
@@ -54,7 +79,7 @@ def run_agent_generation(payload: dict) -> dict:
     allowance. Entitlement was already checked when the job was accepted, so a
     caller cannot use the queue to bypass their plan.
     """
-    result = llm_service.run_agent(**{k: payload.get(k) for k in _GENERATION_FIELDS})
+    result = llm_service.run_agent(**_generation_kwargs(payload))
     billing_service.increment_generation_usage(payload["user_id"])
     return result
 
@@ -69,7 +94,7 @@ def run_carousel_generation(payload: dict) -> dict:
     """
     from app.services.carousel_pipeline_service import CarouselPipelineService
 
-    generation = llm_service.run_agent(**{k: payload.get(k) for k in _GENERATION_FIELDS})
+    generation = llm_service.run_agent(**_generation_kwargs(payload))
 
     structured = generation.get("structured_output")
     if not isinstance(structured, dict) or not structured.get("slides"):

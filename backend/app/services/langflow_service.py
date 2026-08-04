@@ -107,10 +107,25 @@ class LangflowService:
             "reel_feedback": "Review the target Reel, explain what works and what weakens performance, identify likely retention drop reasons, and provide a clearly improved version. If specific Reel context is provided, analyze that exact Reel without inventing missing metrics.",
             "caption": "Generate a clear Instagram caption that matches the user's goal, brand voice, and current Instagram context. Make it usable as-is, not just conceptual.",
             "carousel": "Generate clear Instagram carousel copy that teaches, persuades, or converts. If a source link is provided, adapt the angle and structure without copying.",
-            "profile_audit": "Audit the Instagram profile strategically. Prioritize conversion clarity, niche positioning, bio strength, and content direction.",
+            # Judged against the customer's stated objective when one exists, not
+            # against generic best practice. A bio that is "weak" in the abstract
+            # may be exactly right for the goal, and the reverse is likelier
+            # still: a polished profile that sells nothing the customer offers.
+            "profile_audit": (
+                "Audit the Instagram profile strategically. If a marketing brief is provided, judge every "
+                "element against that objective, offer and ideal customer, and say plainly where the profile "
+                "works against the stated goal. Without a brief, fall back to general best practice and say "
+                "that is what you are doing. Prioritize conversion clarity, niche positioning, bio strength, "
+                "and content direction."
+            ),
             "content_plan": "Create a strategic 30-day Instagram content plan. Use any available performance, post, or source-link context to shape the plan around what is likely to work.",
             "link_analysis": "Analyze the provided Instagram link, explain what is working, and adapt the pattern for the user's account. If the user also asks for ideas or scripts, provide them after the analysis.",
-            "performance_summary": "Summarize recent Instagram content performance and turn the findings into practical next actions.",
+            "performance_summary": (
+                "Summarize recent Instagram content performance and turn the findings into practical next "
+                "actions. If a marketing brief is provided, measure performance against its primary KPI "
+                "rather than raw reach: a post with fewer views that moved the stated KPI outperformed a "
+                "viral one that did not."
+            ),
         }
         return instructions.get(task_type, "Respond as a practical Instagram content assistant.")
 

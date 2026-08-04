@@ -525,6 +525,26 @@ class LLMService:
     def _max_output_tokens(self, task_type: str) -> int:
         return self.MAX_OUTPUT_TOKENS_BY_TASK.get(task_type, 1000)
 
+    def _format_marketing_brief(self, brief_context: dict | None) -> str:
+        """Render the customer's brief as a prompt section.
+
+        Returns an empty string when there is no brief, which drops the section
+        entirely: a block of empty labels reads to the model as "these are
+        unknown" and invites it to invent them.
+        """
+        if not brief_context:
+            return ""
+
+        lines = [
+            "This customer's marketing brief. Treat it as the goal every answer serves.",
+            "Do not restate it back to the user; use it to decide what to produce.",
+        ]
+        for label, value in brief_context.items():
+            rendered = ", ".join(str(v) for v in value) if isinstance(value, list) else str(value)
+            if rendered.strip():
+                lines.append(f"- {label}: {rendered}")
+        return "\n".join(lines)
+
     def _build_prompt_sections(
         self,
         *,
@@ -540,6 +560,7 @@ class LLMService:
         recent_posts_context: dict | None = None,
         playbook_context: dict | None = None,
         reel_context: dict | None = None,
+        brief_context: dict | None = None,
     ) -> list[dict[str, str]]:
         reels_high_priority_instruction = self.prompt_builder._reels_high_priority_instruction(task_type, playbook_context)
         direct_structured_output_instruction = self._direct_structured_output_instruction(task_type)
@@ -587,6 +608,14 @@ class LLMService:
                     target_audience=target_audience,
                     goal=goal,
                 ),
+            },
+            {
+                # Placed ahead of the account context so the customer's stated
+                # objective frames everything the model reads afterwards, rather
+                # than arriving as an afterthought below the profile data.
+                "name": "marketing_brief",
+                "role": "system",
+                "content": self._format_marketing_brief(brief_context),
             },
             {
                 "name": "context_notice",
@@ -1025,6 +1054,7 @@ class LLMService:
         recent_posts_context: dict | None = None,
         playbook_context: dict | None = None,
         reel_context: dict | None = None,
+        brief_context: dict | None = None,
     ) -> dict[str, Any]:
         compact_profile_context = self._compact_profile_context(profile_context)
         compact_recent_content_context = self._compact_recent_content_context(recent_content_context)
@@ -1054,6 +1084,7 @@ class LLMService:
             recent_posts_context=compact_recent_posts_context,
             playbook_context=compact_playbook_context,
             reel_context=compact_reel_context,
+            brief_context=brief_context,
         )
         response_input, prompt_section_names = self._sections_to_response_input(prompt_sections)
         prompt_token_estimate = self._estimate_prompt_tokens(response_input)
@@ -1115,6 +1146,7 @@ class LLMService:
         recent_posts_context: dict | None = None,
         playbook_context: dict | None = None,
         reel_context: dict | None = None,
+        brief_context: dict | None = None,
     ) -> dict[str, Any]:
         prepared_generation = self._prepare_generation(
             message=message,
@@ -1129,6 +1161,7 @@ class LLMService:
             recent_posts_context=recent_posts_context,
             playbook_context=playbook_context,
             reel_context=reel_context,
+            brief_context=brief_context,
         )
 
         if self.primary_provider != "openai":
