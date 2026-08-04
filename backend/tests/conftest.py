@@ -25,6 +25,7 @@ Tests that legitimately need a live dependency can opt out with
 import os
 import pathlib
 import sys
+import tempfile
 
 import pytest
 
@@ -78,6 +79,11 @@ for _name in [k for k in os.environ if k.startswith(_PURGED_PREFIXES) or k in _P
 _TEST_DEFAULTS = {
     "LANGFLOW_API_KEY": "test-langflow-key",
     "LANGFLOW_BASE_URL": "http://langflow.invalid",
+    # Services are constructed at module import time, so BillingService would
+    # otherwise open (and migrate into) the real backend/app/data store the
+    # moment a test imports the app. Point it at a throwaway directory instead:
+    # a test run must not create or mutate production data.
+    "BILLING_DB_PATH": str(pathlib.Path(tempfile.mkdtemp(prefix="ig_agent_test_billing_")) / "billing.sqlite3"),
 }
 for _key, _value in _TEST_DEFAULTS.items():
     os.environ.setdefault(_key, _value)
