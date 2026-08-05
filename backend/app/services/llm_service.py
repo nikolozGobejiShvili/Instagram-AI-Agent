@@ -119,6 +119,47 @@ class LLMService:
 
     def _structured_schema(self, task_type: str) -> dict[str, Any] | None:
         schemas: dict[str, dict[str, Any]] = {
+            # Carousel was the one structured task with no schema, so its shape
+            # depended on the model following heading instructions ("Title:",
+            # "Slide 1:", ...). Sonnet 4.6 does not -- it answers in markdown, the
+            # heading parser finds nothing, and the job dies with "did not produce
+            # any slides". Enforcing the schema removes the obedience question
+            # entirely, and is also what keeps markdown out of the copy.
+            "carousel": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["reply", "structured_output"],
+                "properties": {
+                    "reply": {"type": "string"},
+                    "structured_output": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["title", "slides", "cta"],
+                        "properties": {
+                            "title": {"type": "string"},
+                            "slides": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["slide_number", "headline", "body", "image_prompt"],
+                                    "properties": {
+                                        "slide_number": {"type": "integer"},
+                                        "headline": {"type": "string"},
+                                        "body": {"type": "string"},
+                                        # Art direction for the background only.
+                                        # Slide copy is composited in code, so a
+                                        # prompt asking for text would produce
+                                        # letters behind the real letters.
+                                        "image_prompt": {"type": "string"},
+                                    },
+                                },
+                            },
+                            "cta": {"type": "string"},
+                        },
+                    },
+                },
+            },
             "reel_idea": {
                 "type": "object",
                 "additionalProperties": False,
@@ -1121,6 +1162,9 @@ class LLMService:
                 task_type=task_type,
                 response_input=response_input,
                 max_output_tokens=self._max_output_tokens(task_type),
+                # When a task has a schema the provider enforces it, so the shape
+                # stops depending on the model choosing to follow instructions.
+                response_schema=self._structured_schema(task_type),
             )
         except ProviderError as exc:
             raise LLMServiceError(
@@ -1212,8 +1256,13 @@ class LLMService:
             # slides": a message pointing at the model rather than at the parse
             # step that was never run. The synchronous chat route normalises the
             # same way; doing it here means every consumer of run_agent gets one
-            # contract instead of each rediscovering this.
-            normalized_reply = self._normalize_provider_reply(task_type, response_payload)
+            # contract instead of each rediscovering this. Tasks whose schema the
+            # provider enforced already carry the payload and are left alone.
+            normalized_reply = (
+                {}
+                if response_payload.get("structured_output") is not None
+                else self._normalize_provider_reply(task_type, response_payload)
+            )
             return {
                 **response_payload,
                 **normalized_reply,

@@ -232,6 +232,103 @@ CAROUSEL_REPLY = "\n".join([
 ])
 
 
+SCHEMA = {
+    "type": "object",
+    "required": ["reply", "structured_output"],
+    "properties": {"reply": {"type": "string"}, "structured_output": {"type": "object"}},
+}
+
+
+def _schema_reply(**payload):
+    import json
+
+    return SimpleNamespace(type="text", text=json.dumps(payload))
+
+
+# ------------------------------------------------- schema-constrained output
+
+
+def test_a_schema_constrains_the_response_instead_of_asking_for_headings():
+    """Asking did not work. Given the "Title: / Slide 1:" contract Sonnet 4.6
+    answers in markdown, so the shape has to be enforced rather than requested."""
+    client = StubAnthropic(blocks=[_schema_reply(reply="ok", structured_output={"slides": []})])
+
+    AnthropicTextProvider(client=client).generate(
+        task_type="carousel", response_input=SECTIONS, max_output_tokens=1200, response_schema=SCHEMA
+    )
+
+    fmt = client.captured["output_config"]["format"]
+    assert fmt == {"type": "json_schema", "schema": SCHEMA}
+    # effort must survive alongside it -- both live in output_config
+    assert client.captured["output_config"]["effort"] == "medium"
+
+
+def test_no_schema_sends_no_format():
+    client = StubAnthropic()
+
+    AnthropicTextProvider(client=client).generate(
+        task_type="chat", response_input=SECTIONS, max_output_tokens=700
+    )
+
+    assert "format" not in client.captured["output_config"]
+
+
+def test_the_customer_never_sees_the_raw_json():
+    """With output_config.format the text block *is* the JSON document, so
+    returning it unchanged would put JSON where prose belongs."""
+    client = StubAnthropic(blocks=[_schema_reply(
+        reply="Here is your carousel.",
+        structured_output={"title": "სათაური", "slides": [{"slide_number": 1}]},
+    )])
+
+    result = AnthropicTextProvider(client=client).generate(
+        task_type="carousel", response_input=SECTIONS, max_output_tokens=1200, response_schema=SCHEMA
+    )
+
+    assert result["reply"] == "Here is your carousel."
+    assert "structured_output" not in result["reply"]
+    assert result["structured_output"]["slides"] == [{"slide_number": 1}]
+    assert result["parse_status"] == "parsed"
+
+
+def test_a_malformed_schema_response_is_downgraded_not_raised():
+    """Discarding a generation the customer already paid for is worse than
+    falling back to parsing the text."""
+    client = StubAnthropic(blocks=[SimpleNamespace(type="text", text="not json at all")])
+
+    result = AnthropicTextProvider(client=client).generate(
+        task_type="carousel", response_input=SECTIONS, max_output_tokens=1200, response_schema=SCHEMA
+    )
+
+    assert result["reply"] == "not json at all"
+    assert result.get("structured_output") is None
+
+
+def test_carousel_is_one_of_the_schema_enforced_tasks():
+    """The task the schema was missing on. Losing it here puts the headline
+    feature back on the model's willingness to follow headings."""
+    from app.services.llm_service import LLMService
+
+    schema = LLMService()._structured_schema("carousel")
+
+    assert schema is not None
+    slides = schema["properties"]["structured_output"]["properties"]["slides"]
+    assert set(slides["items"]["required"]) == {"slide_number", "headline", "body", "image_prompt"}
+
+
+def test_the_schema_reaches_the_provider(monkeypatch):
+    """A schema defined but never passed down would enforce nothing."""
+    from app.services.llm_service import LLMService
+
+    monkeypatch.setenv("PRIMARY_LLM_PROVIDER", "anthropic")
+    stub = StubAnthropic(blocks=[_schema_reply(reply="ok", structured_output={"title": "t", "slides": []})])
+    providers.register_text_provider("anthropic", lambda: AnthropicTextProvider(client=stub))
+
+    LLMService().run_agent(message="გააკეთე კარუსელი", task_type="carousel")
+
+    assert "format" in stub.captured["output_config"]
+
+
 def test_registry_providers_return_structured_output_not_just_prose(monkeypatch):
     """The parse step the registry path was missing.
 

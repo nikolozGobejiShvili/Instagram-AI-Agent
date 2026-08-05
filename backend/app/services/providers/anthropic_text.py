@@ -13,6 +13,7 @@ Only Anthropic SDK calls live in this module.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any
@@ -95,6 +96,7 @@ class AnthropicTextProvider(TextProvider):
         task_type: str,
         response_input: list[dict[str, Any]],
         max_output_tokens: int,
+        response_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         system_prompt, messages = sections_to_system_and_messages(response_input)
         client = self._get_client()
@@ -104,6 +106,15 @@ class AnthropicTextProvider(TextProvider):
         # still working for Haiku — a failure that looks like a model problem.
         system_prompt = apply_billing_attribution(system_prompt, auth_token())
 
+        output_config: dict[str, Any] = {"effort": self.effort_for(task_type)}
+        if response_schema:
+            # Constrains the response to the schema instead of describing a
+            # heading layout and hoping. Asking did not work: given the
+            # "Title: / Slide 1:" contract, Sonnet 4.6 answers in markdown, the
+            # heading parser finds nothing, and a carousel job dies as "did not
+            # produce any slides" — an error that names the wrong thing.
+            output_config["format"] = {"type": "json_schema", "schema": response_schema}
+
         request: dict[str, Any] = {
             "model": self.model_name,
             "max_tokens": max_output_tokens,
@@ -111,7 +122,7 @@ class AnthropicTextProvider(TextProvider):
             # Adaptive thinking: Claude decides depth per request. `budget_tokens`
             # is deprecated on 4.6 and removed on later models.
             "thinking": {"type": "adaptive"},
-            "output_config": {"effort": self.effort_for(task_type)},
+            "output_config": output_config,
         }
         if system_prompt:
             request["system"] = system_prompt
@@ -121,12 +132,43 @@ class AnthropicTextProvider(TextProvider):
         except Exception as exc:  # noqa: BLE001 - normalised below
             raise self._as_provider_error(exc) from exc
 
-        return {
-            "reply": self._extract_text(message),
+        text = self._extract_text(message)
+        result: dict[str, Any] = {
+            "reply": text,
             "model_provider": PROVIDER_NAME,
             "model_name": getattr(message, "model", self.model_name),
             "stop_reason": getattr(message, "stop_reason", None),
             "usage": self._extract_usage(message),
+        }
+        if response_schema:
+            result.update(self._unpack_schema_payload(text))
+        return result
+
+    def _unpack_schema_payload(self, text: str) -> dict[str, Any]:
+        """Split a schema-constrained response into reply and structured output.
+
+        With ``output_config.format`` the text block *is* the JSON document, so
+        returning it unchanged would show the customer raw JSON where prose
+        belongs.
+
+        A malformed document is downgraded rather than raised. The schema makes
+        it near-impossible, and discarding a generation the customer has already
+        paid for is worse than falling back to parsing the text.
+        """
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError):
+            logger.warning("Schema-constrained response was not valid JSON; falling back to text parsing")
+            return {}
+
+        if not isinstance(payload, dict):
+            return {}
+
+        structured_output = payload.get("structured_output")
+        return {
+            "reply": payload.get("reply") or text,
+            "structured_output": structured_output if isinstance(structured_output, dict) else None,
+            "parse_status": "parsed" if isinstance(structured_output, dict) else "raw_only",
         }
 
     # ------------------------------------------------------------------

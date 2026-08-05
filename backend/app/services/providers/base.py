@@ -115,8 +115,17 @@ class TextProvider(ABC):
         task_type: str,
         response_input: list[dict[str, Any]],
         max_output_tokens: int,
+        response_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Return at least ``reply``, ``model_provider`` and ``model_name``."""
+        """Return at least ``reply``, ``model_provider`` and ``model_name``.
+
+        ``response_schema`` is a JSON Schema of ``{reply, structured_output}``.
+        When given, a provider that supports schema-constrained output must
+        enforce it and return ``structured_output`` alongside ``reply``; the
+        caller then skips parsing prose. A provider that cannot enforce it may
+        ignore it -- the caller falls back to parsing, so the request still
+        succeeds rather than failing on a capability difference.
+        """
 
 
 class ImageProvider(ABC):
