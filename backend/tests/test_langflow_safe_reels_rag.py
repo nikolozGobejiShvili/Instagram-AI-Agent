@@ -99,7 +99,7 @@ def _patch_basic_agent_chat_route(monkeypatch, tmp_path):
 
     monkeypatch.setattr(agent_route, "generation_history_service", history_service)
     monkeypatch.setattr(agent_route.billing_service, "enforce_agent_access", lambda user_id, task_type: {"current_plan": "pro"})
-    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id: None)
+    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id, task_type=None: None)
     monkeypatch.setattr(agent_route.connected_accounts_service, "resolve_account_id", lambda user_id, account_id=None: account_id or "acct-1")
     monkeypatch.setattr(agent_route.profile_context_service, "get_context", lambda account_id: {})
     monkeypatch.setattr(agent_route.recent_posts_context_service, "get_context", lambda account_id: {"posts": []})
@@ -455,7 +455,7 @@ def test_agent_route_uses_safe_langflow_reels_without_local_chunk_injection(monk
     monkeypatch.setattr(knowledge_pack_route.langflow_service, "ingest_system_reels_knowledge", lambda **kwargs: {"ingestion_triggered": True})
 
     monkeypatch.setattr(agent_route.billing_service, "enforce_agent_access", lambda user_id, task_type: {"current_plan": "pro"})
-    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id: None)
+    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id, task_type=None: None)
     monkeypatch.setattr(agent_route.connected_accounts_service, "resolve_account_id", lambda user_id, account_id=None: account_id or "acct-1")
     monkeypatch.setattr(agent_route.connected_accounts_service, "find_user_id_by_account_id", lambda account_id: "user-1")
     monkeypatch.setattr(agent_route.profile_context_service, "get_context", lambda account_id: {
@@ -606,7 +606,7 @@ def test_non_reels_tasks_do_not_use_safe_langflow_reels(monkeypatch):
     called = {"langflow": False, "direct": False}
 
     monkeypatch.setattr(agent_route.billing_service, "enforce_agent_access", lambda user_id, task_type: {"current_plan": "pro"})
-    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id: None)
+    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id, task_type=None: None)
     monkeypatch.setattr(agent_route.connected_accounts_service, "resolve_account_id", lambda user_id, account_id=None: "acct-1")
     monkeypatch.setattr(agent_route.profile_context_service, "get_context", lambda account_id: {})
     monkeypatch.setattr(agent_route.recent_posts_context_service, "get_context", lambda account_id: {"posts": []})
@@ -649,7 +649,7 @@ def test_agent_route_skips_deterministic_retrieval_for_chat_greeting(monkeypatch
 
     monkeypatch.setattr(agent_route, "generation_history_service", history_service)
     monkeypatch.setattr(agent_route.billing_service, "enforce_agent_access", lambda user_id, task_type: {"current_plan": "pro"})
-    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id: None)
+    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id, task_type=None: None)
     monkeypatch.setattr(agent_route.connected_accounts_service, "resolve_account_id", lambda user_id, account_id=None: account_id or "acct-1")
     monkeypatch.setattr(agent_route.profile_context_service, "get_context", lambda account_id: {})
     monkeypatch.setattr(
@@ -703,7 +703,7 @@ def test_agent_route_uses_deterministic_retrieval_for_reel_idea(monkeypatch, tmp
 
     monkeypatch.setattr(agent_route, "generation_history_service", history_service)
     monkeypatch.setattr(agent_route.billing_service, "enforce_agent_access", lambda user_id, task_type: {"current_plan": "pro"})
-    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id: None)
+    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id, task_type=None: None)
     monkeypatch.setattr(agent_route.connected_accounts_service, "resolve_account_id", lambda user_id, account_id=None: account_id or "acct-1")
     monkeypatch.setattr(agent_route.profile_context_service, "get_context", lambda account_id: {
         "brand_name": "Lead Lab",
@@ -1160,7 +1160,7 @@ def test_link_analysis_route_sends_link_context_media_match_and_knowledge_to_mai
 
     monkeypatch.setattr(agent_route, "generation_history_service", history_service)
     monkeypatch.setattr(agent_route.billing_service, "enforce_agent_access", lambda user_id, task_type: {"current_plan": "pro"})
-    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id: None)
+    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id, task_type=None: None)
     monkeypatch.setattr(agent_route.connected_accounts_service, "resolve_account_id", lambda user_id, account_id=None: account_id or "test3")
     monkeypatch.setattr(agent_route.profile_context_service, "get_context", lambda account_id: {
         "brand_name": "Lead Lab",
@@ -1294,7 +1294,7 @@ def test_reel_feedback_with_link_passes_link_context_to_main_langflow(monkeypatc
     monkeypatch.setenv("USE_LANGFLOW_SAFE_REELS_RAG", "false")
 
     monkeypatch.setattr(agent_route.billing_service, "enforce_agent_access", lambda user_id, task_type: {"current_plan": "pro"})
-    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id: None)
+    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id, task_type=None: None)
     monkeypatch.setattr(agent_route.connected_accounts_service, "resolve_account_id", lambda user_id, account_id=None: account_id or "test3")
     monkeypatch.setattr(agent_route.profile_context_service, "get_context", lambda account_id: {})
     monkeypatch.setattr(agent_route.recent_posts_context_service, "get_context", lambda account_id: {"posts": []})

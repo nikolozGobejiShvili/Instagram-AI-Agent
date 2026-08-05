@@ -21,6 +21,7 @@ from app.schemas.generation_job import (
     GenerationJobResponse,
 )
 from app.services.billing_service import BillingService
+from app.services.carousel_pipeline_service import CarouselPipelineService
 from app.services.connected_accounts_service import ConnectedAccountsService
 from app.services.job_service import JobService, JobWorker
 from app.services.llm_service import LLMService
@@ -35,6 +36,7 @@ billing_service = BillingService()
 llm_service = LLMService()
 marketing_brief_service = MarketingBriefService()
 connected_accounts_service = ConnectedAccountsService()
+carousel_pipeline_service = CarouselPipelineService()
 
 AGENT_GENERATION = "agent_generation"
 CAROUSEL_GENERATION = "carousel_generation"
@@ -47,6 +49,10 @@ _GENERATION_FIELDS = (
     "target_audience",
     "goal",
     "link",
+    # Carousel only, and already clamped to the plan when the job was accepted.
+    # It reaches the prompt so the model is asked for the right number of slides
+    # rather than a fixed five that later has to be trimmed.
+    "slide_count",
 )
 
 
@@ -80,7 +86,7 @@ def run_agent_generation(payload: dict) -> dict:
     caller cannot use the queue to bypass their plan.
     """
     result = llm_service.run_agent(**_generation_kwargs(payload))
-    billing_service.increment_generation_usage(payload["user_id"])
+    billing_service.increment_generation_usage(payload["user_id"], payload.get("task_type"))
     return result
 
 
@@ -102,12 +108,31 @@ def run_carousel_generation(payload: dict) -> dict:
         # than storing an empty carousel that looks successful.
         raise ValueError("Carousel generation did not produce any slides")
 
+    # The model is *asked* for a slide count but is not bound by it, and every
+    # slide that reaches the renderer costs one image generation. Clamping here
+    # -- after the copy exists, before anything is rendered -- is what makes a
+    # plan's slide limit cost anything. Trimming beats failing: the customer gets
+    # the carousel their tier covers instead of an error about a number the model
+    # chose.
+    plan = billing_service.get_plan(payload["user_id"])
+    slide_limit = int(plan["carousel_slide_limit"])
+    slides = structured["slides"]
+    if len(slides) > slide_limit:
+        logger.info(
+            "Trimming carousel to plan limit user_id=%s plan=%s produced=%s limit=%s",
+            payload["user_id"],
+            plan["current_plan"],
+            len(slides),
+            slide_limit,
+        )
+        structured = {**structured, "slides": slides[:slide_limit]}
+
     rendered = CarouselPipelineService().render_carousel(
         structured_output=structured,
         generate_images=bool(payload.get("generate_images", True)),
     )
 
-    billing_service.increment_generation_usage(payload["user_id"])
+    billing_service.increment_generation_usage(payload["user_id"], payload.get("task_type"))
     return {**generation, "structured_output": rendered}
 
 
@@ -130,15 +155,26 @@ def create_generation_job(payload: GenerationJobCreateRequest, response: Respons
     # Entitlement is enforced before the job is accepted, so an over-quota or
     # unentitled caller gets an immediate, honest refusal instead of a queued job
     # that fails later.
-    billing_service.enforce_agent_access(payload.user_id, payload.task_type)
+    plan = billing_service.enforce_agent_access(payload.user_id, payload.task_type)
 
     # A carousel needs the render pipeline; everything else is text only.
     kind = CAROUSEL_GENERATION if payload.task_type == "carousel" else AGENT_GENERATION
 
+    job_payload = payload.model_dump()
+    if kind == CAROUSEL_GENERATION:
+        # Clamped at accept time so the model is *asked* for a count the plan
+        # allows. Trimming after generation alone would still pay Sonnet to write
+        # slides that are then thrown away, and would leave the carousel's own
+        # "1 of N" numbering describing a length it no longer has.
+        job_payload["slide_count"] = carousel_pipeline_service.resolve_slide_count(
+            payload.slide_count,
+            tier_maximum=plan["carousel_slide_limit"],
+        )
+
     job = job_service.enqueue(
         user_id=payload.user_id,
         kind=kind,
-        payload=payload.model_dump(),
+        payload=job_payload,
     )
     response.headers["Location"] = f"{router.prefix}/{job['job_id']}"
     return _serialize(job)

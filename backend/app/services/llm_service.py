@@ -561,6 +561,7 @@ class LLMService:
         playbook_context: dict | None = None,
         reel_context: dict | None = None,
         brief_context: dict | None = None,
+        slide_count: int | None = None,
     ) -> list[dict[str, str]]:
         reels_high_priority_instruction = self.prompt_builder._reels_high_priority_instruction(task_type, playbook_context)
         direct_structured_output_instruction = self._direct_structured_output_instruction(task_type)
@@ -580,7 +581,7 @@ class LLMService:
         sections.append({
             "name": "required_output_format",
             "role": "system",
-            "content": self.prompt_builder._output_format_instruction(task_type),
+            "content": self.prompt_builder._output_format_instruction(task_type, slide_count),
         })
 
         if direct_structured_output_instruction:
@@ -1055,6 +1056,7 @@ class LLMService:
         playbook_context: dict | None = None,
         reel_context: dict | None = None,
         brief_context: dict | None = None,
+        slide_count: int | None = None,
     ) -> dict[str, Any]:
         compact_profile_context = self._compact_profile_context(profile_context)
         compact_recent_content_context = self._compact_recent_content_context(recent_content_context)
@@ -1085,6 +1087,7 @@ class LLMService:
             playbook_context=compact_playbook_context,
             reel_context=compact_reel_context,
             brief_context=brief_context,
+            slide_count=slide_count,
         )
         response_input, prompt_section_names = self._sections_to_response_input(prompt_sections)
         prompt_token_estimate = self._estimate_prompt_tokens(response_input)
@@ -1147,6 +1150,7 @@ class LLMService:
         playbook_context: dict | None = None,
         reel_context: dict | None = None,
         brief_context: dict | None = None,
+        slide_count: int | None = None,
     ) -> dict[str, Any]:
         prepared_generation = self._prepare_generation(
             message=message,
@@ -1162,6 +1166,7 @@ class LLMService:
             playbook_context=playbook_context,
             reel_context=reel_context,
             brief_context=brief_context,
+            slide_count=slide_count,
         )
 
         if self.primary_provider != "openai":

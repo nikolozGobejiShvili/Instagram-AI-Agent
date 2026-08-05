@@ -171,7 +171,7 @@ class LangflowService:
             "Final CTA slide:",
         ])
 
-    def _output_format_instruction(self, task_type: str) -> str:
+    def _output_format_instruction(self, task_type: str, slide_count: int | None = None) -> str:
         formats = {
             "reel_idea": "\n".join([
                 "Title:",
@@ -207,8 +207,9 @@ class LangflowService:
             ]),
             # Slide headings are generated from the requested count rather than
             # fixed at five, so the prompt contract, the parser and the tier
-            # limit all agree on how many slides a carousel has.
-            "carousel": self._carousel_output_format(),
+            # limit all agree on how many slides a carousel has. The count
+            # arriving here has already been clamped to the customer's plan.
+            "carousel": self._carousel_output_format(slide_count),
             "profile_audit": "\n".join([
                 "What works:",
                 "What is weak:",

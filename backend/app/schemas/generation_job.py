@@ -3,6 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.agent import TaskType
+from app.services.agent_response_formatter_service import MAX_CAROUSEL_SLIDES
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
 
@@ -14,6 +15,7 @@ class GenerationJobCreateRequest(BaseModel):
             "task_type": "carousel",
             "message": "მომეცი კარუსელი ჩემი ახალი პროდუქტისთვის",
             "goal": "increase qualified inbound leads from Instagram",
+            "slide_count": 8,
         }
     })
 
@@ -25,6 +27,16 @@ class GenerationJobCreateRequest(BaseModel):
     target_audience: str | None = None
     goal: str | None = None
     link: str | None = None
+
+    # Carousel only. The upper bound here is the parser's ceiling, not the
+    # customer's: a request above the plan's slide limit is clamped rather than
+    # rejected, so asking for more than the tier covers returns the carousel the
+    # tier does cover instead of an error.
+    slide_count: int | None = Field(default=None, ge=2, le=MAX_CAROUSEL_SLIDES)
+    # A text-only carousel skips the per-slide image generation entirely, which
+    # is what makes a cheap preview possible. Default stays True so the normal
+    # request produces the finished article.
+    generate_images: bool = True
 
 
 class GenerationJobResponse(BaseModel):

@@ -939,7 +939,7 @@ def agent_chat(payload: AgentChatRequest):
             result["structured_output"] = normalized_reply.get("structured_output")
 
         result["task_type"] = payload.task_type
-        billing_service.increment_generation_usage(effective_user_id)
+        billing_service.increment_generation_usage(effective_user_id, payload.task_type)
     except HTTPException as exc:
         if sync_attempted and sync_succeeded is None:
             sync_succeeded = False

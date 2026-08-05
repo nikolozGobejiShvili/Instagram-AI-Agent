@@ -44,11 +44,14 @@ def client(monkeypatch, tmp_path):
     return test_client
 
 
+# content_plan, not carousel: these tests cover the generic job contract, and a
+# carousel now routes to the render pipeline (see test_carousel_pipeline). It is
+# still a pro-only task, which keeps the entitlement case below honest.
+DEFAULT_TASK_TYPE = "content_plan"
+
+
 def _create(client, **overrides):
-    # content_plan, not carousel: these tests cover the generic job contract, and
-    # a carousel now routes to the render pipeline (see test_carousel_pipeline).
-    # It is still a pro-only task, which keeps the entitlement case below honest.
-    body = {"user_id": "jobs-user", "task_type": "content_plan", "message": "მომეცი გეგმა"}
+    body = {"user_id": "jobs-user", "task_type": DEFAULT_TASK_TYPE, "message": "მომეცი გეგმა"}
     body.update(overrides)
     return client.post("/api/v1/generation-jobs", json=body)
 
@@ -100,7 +103,7 @@ def test_a_failing_generation_surfaces_as_a_failed_job(client, monkeypatch):
 
 
 def test_entitlement_is_refused_before_a_job_is_created(client):
-    """A trial plan does not include carousel, so nothing should be queued."""
+    """A trial plan does not include content_plan, so nothing should be queued."""
     client.billing_service.set_plan("jobs-user", {"current_plan": "trial"})
 
     response = _create(client)
@@ -112,13 +115,18 @@ def test_entitlement_is_refused_before_a_job_is_created(client):
 def test_usage_is_charged_only_when_the_job_succeeds(client, monkeypatch):
     client.billing_service.set_plan("jobs-user", {"current_plan": "pro"})
     before = client.billing_service.get_plan("jobs-user")["monthly_generation_used"]
+    # Tasks are priced individually, so the expected charge is looked up rather
+    # than assumed to be one -- hard-coding it would make this test fail on any
+    # future price change while saying nothing about charge-on-success.
+    cost = client.billing_service.generation_cost(DEFAULT_TASK_TYPE)
+    assert cost > 0, "a successful generation must cost something"
 
     # Accepting a job must not consume the allowance on its own.
     _create(client)
     assert client.billing_service.get_plan("jobs-user")["monthly_generation_used"] == before
 
     client.worker.run_once()
-    assert client.billing_service.get_plan("jobs-user")["monthly_generation_used"] == before + 1
+    assert client.billing_service.get_plan("jobs-user")["monthly_generation_used"] == before + cost
 
     # A failed job must not be charged.
     monkeypatch.setattr(
@@ -128,7 +136,7 @@ def test_usage_is_charged_only_when_the_job_succeeds(client, monkeypatch):
     )
     _create(client)
     client.worker.run_once()
-    assert client.billing_service.get_plan("jobs-user")["monthly_generation_used"] == before + 1
+    assert client.billing_service.get_plan("jobs-user")["monthly_generation_used"] == before + cost
 
 
 def test_unknown_job_id_is_404(client):

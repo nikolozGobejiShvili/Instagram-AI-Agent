@@ -35,7 +35,7 @@ def client(monkeypatch, tmp_path):
     captured_contexts: list[dict] = []
 
     monkeypatch.setattr(agent_route.billing_service, "enforce_agent_access", lambda user_id, task_type: {"current_plan": "pro"})
-    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id: None)
+    monkeypatch.setattr(agent_route.billing_service, "increment_generation_usage", lambda user_id, task_type=None: None)
     monkeypatch.setattr(agent_route.connected_accounts_service, "resolve_account_id", lambda user_id, account_id=None: account_id or "acct-1")
     monkeypatch.setattr(agent_route.connected_accounts_service, "find_user_id_by_account_id", lambda account_id: "user-1")
     monkeypatch.setattr(agent_route.profile_context_service, "get_context", lambda account_id: {

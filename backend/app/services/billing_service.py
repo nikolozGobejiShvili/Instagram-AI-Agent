@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from app.services.agent_response_formatter_service import MAX_CAROUSEL_SLIDES
 from app.services.connected_accounts_service import ConnectedAccountsService
 
 
@@ -41,23 +42,61 @@ class BillingService:
         "performance_summary",
     ]
 
+    # A generation is not a fixed unit of cost. `chat` is one Sonnet call at
+    # `effort=low`; `carousel` is one Sonnet call *plus* an image generation per
+    # slide, so it costs roughly an order of magnitude more to serve. While every
+    # task was charged a single unit, the customers using the headline feature
+    # were exactly the ones the plan lost money on. Weights live in one table so
+    # pricing stays a single edit rather than a change spread across call sites.
+    GENERATION_COST = {
+        "carousel": 5,
+        "content_plan": 3,
+        "profile_audit": 2,
+        "link_analysis": 2,
+    }
+    DEFAULT_GENERATION_COST = 1
+
+    # Trial and creator include `carousel` deliberately. A trial that cannot run
+    # the feature the subscription is sold on demonstrates nothing, and a first
+    # paid tier without it would mean paying to lose access. The ladder is drawn
+    # with credits, slide count and account count instead.
     PLAN_DEFAULTS = {
         "trial": {
             "connected_account_limit": 1,
             "tracked_accounts_limit": 0,
             "monthly_generation_limit": 15,
-            "allowed_task_types": ["chat", "reel_idea", "reel_feedback", "caption", "performance_summary", "profile_audit"],
+            "carousel_slide_limit": 5,
+            "allowed_task_types": [
+                "chat",
+                "reel_idea",
+                "reel_feedback",
+                "caption",
+                "performance_summary",
+                "profile_audit",
+                "carousel",
+            ],
         },
         "creator": {
             "connected_account_limit": 1,
             "tracked_accounts_limit": 3,
             "monthly_generation_limit": 120,
-            "allowed_task_types": ["chat", "reel_idea", "reel_script", "reel_feedback", "caption", "performance_summary", "profile_audit"],
+            "carousel_slide_limit": 7,
+            "allowed_task_types": [
+                "chat",
+                "reel_idea",
+                "reel_script",
+                "reel_feedback",
+                "caption",
+                "performance_summary",
+                "profile_audit",
+                "carousel",
+            ],
         },
         "pro": {
             "connected_account_limit": 2,
             "tracked_accounts_limit": 10,
             "monthly_generation_limit": 400,
+            "carousel_slide_limit": 10,
             "allowed_task_types": [
                 "chat",
                 "reel_idea",
@@ -75,6 +114,7 @@ class BillingService:
             "connected_account_limit": 10,
             "tracked_accounts_limit": 50,
             "monthly_generation_limit": 2000,
+            "carousel_slide_limit": MAX_CAROUSEL_SLIDES,
             # Copied, not aliased. Referencing SUPPORTED_TASK_TYPES directly made
             # this the *same list object* as the class constant, so any in-place
             # mutation of a plan's task types would have rewritten the constant
@@ -84,6 +124,41 @@ class BillingService:
     }
 
     TRIAL_DURATION_DAYS = 14
+
+    @classmethod
+    def generation_cost(cls, task_type: str | None) -> int:
+        """Credits one run of ``task_type`` consumes."""
+        return cls.GENERATION_COST.get(task_type or "", cls.DEFAULT_GENERATION_COST)
+
+    @classmethod
+    def plan_catalogue(cls) -> dict:
+        """Everything a storefront needs to render pricing, without a customer.
+
+        The tier table only existed inside this module, so a site selling these
+        subscriptions had no way to ask what it was selling and would have had to
+        hard-code a second copy -- one that silently drifts the first time a limit
+        changes here.
+        """
+        return {
+            "plans": [
+                {
+                    "plan_id": plan_id,
+                    "connected_account_limit": defaults["connected_account_limit"],
+                    "tracked_accounts_limit": defaults["tracked_accounts_limit"],
+                    "monthly_generation_limit": defaults["monthly_generation_limit"],
+                    "carousel_slide_limit": defaults["carousel_slide_limit"],
+                    "allowed_task_types": list(defaults["allowed_task_types"]),
+                    "trial_duration_days": cls.TRIAL_DURATION_DAYS if plan_id == "trial" else None,
+                }
+                for plan_id, defaults in cls.PLAN_DEFAULTS.items()
+            ],
+            # Published so a client can show the cost of an action before the
+            # customer commits to it, rather than discovering it in the balance.
+            "generation_costs": {
+                task_type: cls.generation_cost(task_type) for task_type in cls.SUPPORTED_TASK_TYPES
+            },
+            "default_generation_cost": cls.DEFAULT_GENERATION_COST,
+        }
 
     _SCHEMA = """
         CREATE TABLE IF NOT EXISTS billing_plans (
@@ -198,6 +273,7 @@ class BillingService:
             "monthly_generation_used": int(row["monthly_generation_used"]),
             "connected_account_limit": defaults["connected_account_limit"],
             "tracked_accounts_limit": defaults["tracked_accounts_limit"],
+            "carousel_slide_limit": defaults["carousel_slide_limit"],
             "allowed_task_types": list(defaults["allowed_task_types"]),
             "usage_month": row["usage_month"],
         }
@@ -330,6 +406,7 @@ class BillingService:
             "monthly_generation_remaining": remaining,
             "connected_account_limit": int(record["connected_account_limit"]),
             "tracked_accounts_limit": int(record["tracked_accounts_limit"]),
+            "carousel_slide_limit": int(record["carousel_slide_limit"]),
             "allowed_task_types": list(record.get("allowed_task_types", [])),
             "usage_month": str(record.get("usage_month") or self._usage_month()),
         }
@@ -468,13 +545,23 @@ class BillingService:
                 detail=f"Task type '{task_type}' is not available on the current plan",
             )
 
-    def _assert_generation_limit(self, plan: dict) -> None:
-        if int(plan["monthly_generation_used"]) >= int(plan["monthly_generation_limit"]):
+    def _assert_generation_limit(self, plan: dict, task_type: str | None = None) -> None:
+        """Refuse a task the remaining allowance cannot pay for.
+
+        Comparing ``used >= limit`` was only correct while every task cost one
+        credit. A customer holding two credits must not be able to start a
+        carousel costing five: the charge lands *after* the work succeeds, so the
+        overspend would only be discovered once it had already happened.
+        """
+        cost = self.generation_cost(task_type)
+        used = int(plan["monthly_generation_used"])
+        limit = int(plan["monthly_generation_limit"])
+        if used + cost > limit:
             raise HTTPException(
                 status_code=429,
                 detail=(
                     f"Monthly generation limit reached for current plan "
-                    f"({plan['monthly_generation_used']}/{plan['monthly_generation_limit']})"
+                    f"({used}/{limit}); this request costs {cost}"
                 ),
             )
 
@@ -482,37 +569,51 @@ class BillingService:
         plan = self.get_plan(user_id)
         self._assert_plan_active(plan)
         self._assert_task_allowed(plan, task_type)
-        self._assert_generation_limit(plan)
+        self._assert_generation_limit(plan, task_type)
         return plan
 
-    def increment_generation_usage(self, user_id: str) -> dict:
-        """Charge exactly one generation.
+    def increment_generation_usage(self, user_id: str, task_type: str | None = None) -> dict:
+        """Charge one run of ``task_type``, priced by ``GENERATION_COST``.
 
         The whole operation is one statement inside one transaction, so
         concurrent callers cannot lose each other's increments. The CASE also
         performs the month rollover atomically: without it, two requests either
         side of a month boundary could race and reset a counter that had already
         been incremented.
+
+        ``task_type`` defaults to ``None`` -- charged at the base rate -- so a
+        caller that cannot name the task still charges something rather than
+        nothing.
+
+        Entitlement is checked at accept time and charged here on success, which
+        leaves a window where enough simultaneous requests can overshoot the
+        limit. That is deliberate: the alternative is reserving credit up front
+        and refunding failures, which bills customers for work they never
+        received. The overshoot is bounded by concurrency; a silent charge for a
+        failed generation would not be.
         """
         self._get_or_create_record(user_id)  # ensure the row exists
         usage_month = self._usage_month()
+        cost = self.generation_cost(task_type)
 
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "UPDATE billing_plans SET "
-                " monthly_generation_used = CASE WHEN usage_month = ? THEN monthly_generation_used + 1 ELSE 1 END, "
+                " monthly_generation_used = CASE WHEN usage_month = ? THEN monthly_generation_used + ? ELSE ? END, "
                 " usage_month = ? "
                 "WHERE user_id = ?",
-                (usage_month, usage_month, user_id),
+                (usage_month, cost, cost, usage_month, user_id),
             )
             conn.execute("COMMIT")
             row = self._fetch_row(conn, user_id)
 
         record = self._row_to_record(row)
         logger.info(
-            "Incremented monthly generation usage user_id=%s used=%s limit=%s",
+            "Charged generation user_id=%s task_type=%s cost=%s used=%s limit=%s",
             user_id,
+            task_type,
+            cost,
             record["monthly_generation_used"],
             record["monthly_generation_limit"],
         )
