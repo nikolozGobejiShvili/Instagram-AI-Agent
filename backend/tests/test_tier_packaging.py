@@ -62,15 +62,70 @@ def test_catalogue_reports_what_each_tier_actually_enforces():
         defaults = BillingService.PLAN_DEFAULTS[entry["plan_id"]]
         assert entry["monthly_generation_limit"] == defaults["monthly_generation_limit"]
         assert entry["carousel_slide_limit"] == defaults["carousel_slide_limit"]
-        assert entry["allowed_task_types"] == list(defaults["allowed_task_types"])
+        assert entry["allowed_task_types"] == BillingService._offered(defaults["allowed_task_types"])
 
 
-def test_catalogue_prices_every_supported_task():
+def test_catalogue_prices_every_offered_task():
     """A client cannot show the cost of an action it has no price for."""
     body = TestClient(app).get("/api/v1/billing/plans").json()
 
-    assert set(body["generation_costs"]) == set(BillingService.SUPPORTED_TASK_TYPES)
+    assert set(body["generation_costs"]) == set(
+        BillingService._offered(BillingService.SUPPORTED_TASK_TYPES)
+    )
     assert all(cost >= 1 for cost in body["generation_costs"].values())
+
+
+# ------------------------------------------------------ withheld from sale
+
+
+def test_a_withheld_task_is_advertised_by_no_plan():
+    """link_analysis reads a competitor's public Instagram URL, and Instagram
+    answers unauthenticated datacenter requests with a login wall -- so the
+    analysis has nothing to analyse. Listing it would sell an empty box."""
+    body = TestClient(app).get("/api/v1/billing/plans").json()
+
+    for entry in body["plans"]:
+        for task_type in BillingService.WITHHELD_TASK_TYPES:
+            assert task_type not in entry["allowed_task_types"], entry["plan_id"]
+
+
+def test_a_withheld_task_is_named_with_its_reason_not_silently_dropped():
+    """Vanishing between releases looks like a bug; "coming soon" with a reason
+    is something a storefront can show."""
+    body = TestClient(app).get("/api/v1/billing/plans").json()
+
+    assert set(body["withheld_task_types"]) == set(BillingService.WITHHELD_TASK_TYPES)
+    assert all(reason.strip() for reason in body["withheld_task_types"].values())
+
+
+def test_a_withheld_task_is_refused_as_unavailable_not_as_an_upgrade_prompt(billing):
+    """403 would mean "your plan lacks this" and push the customer toward an
+    upgrade that cannot deliver it either. It is on no plan at all."""
+    billing.set_plan(USER, {"current_plan": "agency"})
+
+    with pytest.raises(Exception) as exc:
+        billing.enforce_agent_access(USER, "link_analysis")
+
+    assert getattr(exc.value, "status_code", None) == 503
+
+
+def test_a_withheld_task_is_refused_even_on_the_top_plan(billing):
+    """The agency plan copies SUPPORTED_TASK_TYPES wholesale, so it is the one
+    that would quietly keep a withheld task."""
+    billing.set_plan(USER, {"current_plan": "agency"})
+
+    assert "link_analysis" not in billing.get_plan(USER)["allowed_task_types"]
+
+
+def test_withholding_costs_nothing_to_undo():
+    """The task stays implemented -- withdrawal is a catalogue decision, not a
+    deletion, so approval re-enables it by removing one dict entry."""
+    from app.services.langflow_service import LangflowService
+
+    for task_type in BillingService.WITHHELD_TASK_TYPES:
+        assert task_type in BillingService.SUPPORTED_TASK_TYPES
+        instruction = LangflowService()._task_instruction(task_type)
+        assert instruction != LangflowService()._task_instruction("definitely_not_a_task")
 
 
 def test_only_the_trial_advertises_an_expiry():

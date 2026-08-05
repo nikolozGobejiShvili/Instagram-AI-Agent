@@ -56,6 +56,27 @@ class BillingService:
     }
     DEFAULT_GENERATION_COST = 1
 
+    # Implemented, but not offered for sale yet.
+    #
+    # link_analysis reads a competitor's public Instagram URL. Instagram serves a
+    # login wall to unauthenticated datacenter requests, so the analysis has
+    # nothing to analyse: a live check returned the page title "Instagram" and
+    # nothing else. The prompt-side reasoning is sound -- it is the data that is
+    # absent -- so the task stays in the codebase and is withheld from the
+    # catalogue instead of being deleted.
+    #
+    # Re-enable by removing the entry once Meta's business_discovery access is
+    # approved. Nothing else needs to change.
+    WITHHELD_TASK_TYPES = {
+        "link_analysis": (
+            "Competitor analysis is temporarily unavailable while Instagram data access is under review."
+        ),
+    }
+
+    @classmethod
+    def _offered(cls, task_types) -> list[str]:
+        return [task_type for task_type in task_types if task_type not in cls.WITHHELD_TASK_TYPES]
+
     # Trial and creator include `carousel` deliberately. A trial that cannot run
     # the feature the subscription is sold on demonstrates nothing, and a first
     # paid tier without it would mean paying to lose access. The ladder is drawn
@@ -147,7 +168,7 @@ class BillingService:
                     "tracked_accounts_limit": defaults["tracked_accounts_limit"],
                     "monthly_generation_limit": defaults["monthly_generation_limit"],
                     "carousel_slide_limit": defaults["carousel_slide_limit"],
-                    "allowed_task_types": list(defaults["allowed_task_types"]),
+                    "allowed_task_types": cls._offered(defaults["allowed_task_types"]),
                     "trial_duration_days": cls.TRIAL_DURATION_DAYS if plan_id == "trial" else None,
                 }
                 for plan_id, defaults in cls.PLAN_DEFAULTS.items()
@@ -155,9 +176,14 @@ class BillingService:
             # Published so a client can show the cost of an action before the
             # customer commits to it, rather than discovering it in the balance.
             "generation_costs": {
-                task_type: cls.generation_cost(task_type) for task_type in cls.SUPPORTED_TASK_TYPES
+                task_type: cls.generation_cost(task_type)
+                for task_type in cls._offered(cls.SUPPORTED_TASK_TYPES)
             },
             "default_generation_cost": cls.DEFAULT_GENERATION_COST,
+            # Named rather than silently absent. A storefront can show these as
+            # "coming soon" honestly, and a client that asks for one gets a
+            # reason instead of a bare refusal.
+            "withheld_task_types": dict(cls.WITHHELD_TASK_TYPES),
         }
 
     _SCHEMA = """
@@ -274,7 +300,7 @@ class BillingService:
             "connected_account_limit": defaults["connected_account_limit"],
             "tracked_accounts_limit": defaults["tracked_accounts_limit"],
             "carousel_slide_limit": defaults["carousel_slide_limit"],
-            "allowed_task_types": list(defaults["allowed_task_types"]),
+            "allowed_task_types": self._offered(defaults["allowed_task_types"]),
             "usage_month": row["usage_month"],
         }
 
@@ -539,6 +565,12 @@ class BillingService:
             raise HTTPException(status_code=403, detail="No active plan is available for this user")
 
     def _assert_task_allowed(self, plan: dict, task_type: str) -> None:
+        # Checked before the plan, and answered 503 rather than 403. A withheld
+        # task is on no plan at all, so "not available on the current plan" would
+        # push the customer toward an upgrade that cannot deliver it.
+        if task_type in self.WITHHELD_TASK_TYPES:
+            raise HTTPException(status_code=503, detail=self.WITHHELD_TASK_TYPES[task_type])
+
         if task_type not in plan["allowed_task_types"]:
             raise HTTPException(
                 status_code=403,

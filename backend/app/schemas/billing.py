@@ -118,6 +118,9 @@ class BillingPlanCatalogueResponse(BaseModel):
                 ],
                 "generation_costs": {"chat": 1, "profile_audit": 2, "carousel": 5},
                 "default_generation_cost": 1,
+                "withheld_task_types": {
+                    "link_analysis": "Competitor analysis is temporarily unavailable while Instagram data access is under review."
+                },
             }
         },
     )
@@ -128,6 +131,10 @@ class BillingPlanCatalogueResponse(BaseModel):
     # will cost before the customer commits to it.
     generation_costs: dict[str, int]
     default_generation_cost: int
+    # Implemented but not for sale, keyed by task type with the reason. Named
+    # rather than silently absent so a storefront can say "coming soon" honestly
+    # instead of the feature simply vanishing between releases.
+    withheld_task_types: dict[str, str] = Field(default_factory=dict)
 
 
 class BillingPlanSetPayload(BaseModel):
