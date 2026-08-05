@@ -17,10 +17,16 @@ import logging
 import os
 from typing import Any
 
+from app.services.providers.anthropic_auth import (
+    apply_billing_attribution,
+    auth_kind,
+    auth_token,
+    client_kwargs,
+)
 from app.services.providers.base import (
     ProviderError,
+    ProviderNotConfigured,
     TextProvider,
-    require_env,
     sections_to_system_and_messages,
 )
 
@@ -59,7 +65,10 @@ class AnthropicTextProvider(TextProvider):
         if self._client is not None:
             return self._client
 
-        api_key = require_env("ANTHROPIC_API_KEY", provider=PROVIDER_NAME)
+        token = auth_token()
+        if not token:
+            raise ProviderNotConfigured(PROVIDER_NAME, missing="ANTHROPIC_AUTH_TOKEN")
+
         try:
             import anthropic
         except ImportError as exc:  # pragma: no cover - dependency is pinned
@@ -70,7 +79,11 @@ class AnthropicTextProvider(TextProvider):
                 code="provider_not_configured",
             ) from exc
 
-        self._client = anthropic.Anthropic(api_key=api_key)
+        # A setup token authenticates as Bearer + OAuth beta; an API key uses
+        # x-api-key. The prefix decides, so switching the credential shape is
+        # a configuration change, never a code change.
+        logger.info("[anthropic] model=%s auth=%s", self.model_name, auth_kind(token))
+        self._client = anthropic.Anthropic(**client_kwargs(token))
         return self._client
 
     def effort_for(self, task_type: str) -> str:
@@ -85,6 +98,11 @@ class AnthropicTextProvider(TextProvider):
     ) -> dict[str, Any]:
         system_prompt, messages = sections_to_system_and_messages(response_input)
         client = self._get_client()
+
+        # Billing attribution must ride on EVERY call path. A setup token that
+        # reaches this line without it answers 400 for Sonnet and Opus while
+        # still working for Haiku — a failure that looks like a model problem.
+        system_prompt = apply_billing_attribution(system_prompt, auth_token())
 
         request: dict[str, Any] = {
             "model": self.model_name,

@@ -115,13 +115,16 @@ def test_refusal_is_reported_distinctly_from_a_generation_failure():
     assert exc.value.status_code == 422
 
 
-def test_missing_api_key_is_a_configuration_error_not_a_model_error(monkeypatch):
+def test_missing_credential_is_a_configuration_error_not_a_model_error(monkeypatch):
+    # Both names must be cleared: ANTHROPIC_API_KEY is still accepted as an
+    # alias for ANTHROPIC_AUTH_TOKEN (see test_anthropic_setup_token.py).
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(ProviderNotConfigured) as exc:
         AnthropicTextProvider().generate(
             task_type="chat", response_input=SECTIONS, max_output_tokens=700
         )
-    assert exc.value.missing == "ANTHROPIC_API_KEY"
+    assert exc.value.missing == "ANTHROPIC_AUTH_TOKEN"
     assert exc.value.status_code == 503
 
 
