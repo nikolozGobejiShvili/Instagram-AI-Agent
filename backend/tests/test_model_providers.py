@@ -220,6 +220,58 @@ def test_llm_service_routes_non_openai_providers_to_the_registry(monkeypatch):
     assert stub.captured["output_config"]["effort"] == "high"
 
 
+CAROUSEL_REPLY = "\n".join([
+    "Title: ძლიერი კაუჭის 3 წესი",
+    "Slide 1: დაიწყე კითხვით",
+    "მაყურებელი პასუხს ეძებს.",
+    "Slide 2: აჩვენე შედეგი",
+    "ციფრი ჯობია დაპირებას.",
+    "Slide 3: ერთი აზრი ერთ სლაიდზე",
+    "ორი აზრი ორივეს კლავს.",
+    "Final CTA slide: შემინახე მოგვიანებისთვის",
+])
+
+
+def test_registry_providers_return_structured_output_not_just_prose(monkeypatch):
+    """The parse step the registry path was missing.
+
+    A registry provider returns prose; only the OpenAI path gets
+    ``structured_output`` back from the model itself. Without parsing here, a
+    carousel job received a reply with no slides and failed as "did not produce
+    any slides" -- a message that points at the model rather than at a parse
+    that never ran. This reached production.
+    """
+    from app.services.llm_service import LLMService
+
+    monkeypatch.setenv("PRIMARY_LLM_PROVIDER", "anthropic")
+    stub = StubAnthropic(blocks=[SimpleNamespace(type="text", text=CAROUSEL_REPLY)])
+    providers.register_text_provider("anthropic", lambda: AnthropicTextProvider(client=stub))
+
+    result = LLMService().run_agent(message="გააკეთე კარუსელი", task_type="carousel")
+
+    structured = result["structured_output"]
+    assert structured is not None, "a carousel with no structured output cannot be rendered"
+    assert [slide["slide_number"] for slide in structured["slides"]] == [1, 2, 3]
+    assert structured["slides"][0]["headline"] == "დაიწყე კითხვით"
+    assert result["parse_status"] == "parsed"
+
+
+def test_an_unparseable_reply_still_returns_the_generation(monkeypatch):
+    """The customer already paid for it. Losing the prose because the headings
+    were wrong would turn a formatting miss into a refund."""
+    from app.services.llm_service import LLMService
+
+    monkeypatch.setenv("PRIMARY_LLM_PROVIDER", "anthropic")
+    stub = StubAnthropic(blocks=[SimpleNamespace(type="text", text="just some prose, no headings")])
+    providers.register_text_provider("anthropic", lambda: AnthropicTextProvider(client=stub))
+
+    result = LLMService().run_agent(message="hi", task_type="carousel")
+
+    assert result["reply"]
+    assert result["parse_status"] == "raw_only"
+    assert result["structured_output"] is None
+
+
 def test_llm_service_surfaces_provider_errors_as_llm_errors(monkeypatch):
     from app.services.llm_service import LLMService, LLMServiceError
 

@@ -1133,6 +1133,32 @@ class LLMService:
                 prompt_section_names=list(prompt_section_names),
             ) from exc
 
+    def _normalize_provider_reply(self, task_type: str, response_payload: dict[str, Any]) -> dict[str, Any]:
+        """Parse a provider's prose into the structured payload callers expect.
+
+        Imported inside the method to keep this module's import graph flat --
+        the formatter imports the response schemas, which import back into the
+        service package.
+
+        A parse failure must not lose the generation the customer already paid
+        for: the reply is returned as-is with ``parse_status`` saying so, and the
+        caller decides whether prose alone is enough.
+        """
+        from app.services.agent_response_formatter_service import AgentResponseFormatterService
+
+        reply = response_payload.get("reply")
+        try:
+            normalized = AgentResponseFormatterService().normalize_reply(task_type, reply)
+        except Exception:  # noqa: BLE001 - parsing must never sink a paid-for reply
+            logger.exception("Could not parse %s output from %s", task_type, self.primary_provider)
+            return {"parse_status": "raw_only", "structured_output": None}
+
+        return {
+            "reply": normalized.get("reply") if normalized.get("reply") is not None else reply,
+            "parse_status": normalized.get("parse_status"),
+            "structured_output": normalized.get("structured_output"),
+        }
+
     def run_agent(
         self,
         *,
@@ -1179,8 +1205,18 @@ class LLMService:
                 prompt_section_names=prepared_generation["prompt_section_names"],
                 prompt_token_estimate=prepared_generation["prompt_token_estimate"],
             )
+            # Registry providers return prose only. The OpenAI path gets
+            # ``structured_output`` back from the model itself, so without this a
+            # caller that needs the parsed payload -- a carousel job, above all --
+            # received a reply and no slides and failed with "did not produce any
+            # slides": a message pointing at the model rather than at the parse
+            # step that was never run. The synchronous chat route normalises the
+            # same way; doing it here means every consumer of run_agent gets one
+            # contract instead of each rediscovering this.
+            normalized_reply = self._normalize_provider_reply(task_type, response_payload)
             return {
                 **response_payload,
+                **normalized_reply,
                 "account_id": account_id,
                 "used_langflow": False,
                 "prompt_section_names": prepared_generation["prompt_section_names"],
