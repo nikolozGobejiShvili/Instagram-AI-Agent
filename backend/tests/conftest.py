@@ -77,6 +77,7 @@ for _name in [k for k in os.environ if k.startswith(_PURGED_PREFIXES) or k in _P
 # knowledge-pack upload from reaching for a live Langflow server. Tests that
 # exercise a flow set the id they need themselves.
 _TEST_STATE_DIR = pathlib.Path(tempfile.mkdtemp(prefix="ig_agent_test_state_"))
+_TEST_SITE_KEY = "test-site-key"
 
 _TEST_DEFAULTS = {
     "LANGFLOW_API_KEY": "test-langflow-key",
@@ -92,9 +93,38 @@ _TEST_DEFAULTS = {
     # The background worker is started by the app lifespan. Tests step the
     # worker by hand so assertions cannot race a thread.
     "JOB_WORKER_ENABLED": "false",
+    # Every /api/v1 route is behind the site key (app/api/site_auth.py), which
+    # fails closed. Set here so the guard is exercised in its real configuration
+    # rather than disabled for tests.
+    "SITE_API_KEY": _TEST_SITE_KEY,
 }
 for _key, _value in _TEST_DEFAULTS.items():
     os.environ.setdefault(_key, _value)
+
+
+# ---------------------------------------------------------------------------
+# 1b. Let the existing suite call the API as the website.
+# ---------------------------------------------------------------------------
+# Several hundred existing calls predate the site key and send no header. Rather
+# than thread one through every call site -- which would bury the guard in noise
+# and make it easy to "fix" a future failure by deleting the header -- the test
+# client sends it by default. The guard's own behaviour, including refusing a
+# request that omits or mistypes the key, is asserted explicitly and against a
+# client built without this default in ``test_site_auth.py``.
+from starlette.testclient import TestClient  # noqa: E402
+
+from app.api.site_auth import SITE_KEY_HEADER  # noqa: E402
+
+_unauthenticated_testclient_init = TestClient.__init__
+
+
+def _site_authenticated_init(self, *args, **kwargs):
+    headers = dict(kwargs.pop("headers", None) or {})
+    headers.setdefault(SITE_KEY_HEADER, _TEST_SITE_KEY)
+    _unauthenticated_testclient_init(self, *args, headers=headers, **kwargs)
+
+
+TestClient.__init__ = _site_authenticated_init
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ privilege escalation (granting yourself a plan, resetting everyone's usage). It
 does not establish who the calling end user is -- ``user_id`` is still a trusted
 request parameter everywhere, which remains an open decision.
 """
+import hmac
 import os
 
 from fastapi import HTTPException, Request
@@ -21,8 +22,14 @@ def require_internal_admin_access(request: Request) -> None:
 
     Fails closed: when ``INTERNAL_ADMIN_KEY`` is unset or blank every request is
     denied, so a missing configuration cannot silently leave the endpoint open.
+
+    This sits *on top of* the site key (``app/api/site_auth.py``), which every
+    ``/api/v1`` route already requires. A leaked site key therefore still cannot
+    grant itself a plan or wipe the usage it was billed for.
     """
     expected_key = os.getenv("INTERNAL_ADMIN_KEY", "").strip()
     provided_key = request.headers.get(INTERNAL_ADMIN_HEADER, "").strip()
-    if not expected_key or provided_key != expected_key:
+    # compare_digest, not ==: a plain comparison stops at the first differing
+    # byte, which leaks the key one character at a time to anyone timing replies.
+    if not expected_key or not hmac.compare_digest(provided_key, expected_key):
         raise HTTPException(status_code=403, detail="Internal admin access is required")

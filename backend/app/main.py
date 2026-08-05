@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 # otherwise be missed on startup.
 load_dotenv()
 
+from app.api.site_auth import SiteKeyMiddleware  # noqa: E402
 from app.api.routes.connected_accounts import router as connected_accounts_router  # noqa: E402
 from app.api.routes.app_bootstrap import router as app_bootstrap_router
 from app.api.routes.billing import router as billing_router
@@ -58,6 +59,10 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+# Added before the routers so every /api/v1 path is covered the moment it is
+# mounted -- including any router added after this line.
+app.add_middleware(SiteKeyMiddleware)
+
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, request_validation_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
