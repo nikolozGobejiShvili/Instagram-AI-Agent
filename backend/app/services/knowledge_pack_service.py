@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+import os
 import re
 import shutil
 from hashlib import sha256
@@ -10,6 +11,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import HTTPException
+
+from app.services.deterministic_knowledge_retrieval_service import RAG_TASK_TYPES
 
 try:
     from pypdf import PdfReader
@@ -151,7 +154,13 @@ class KnowledgePackService:
         chunks_file: Path | None = None,
         storage_dir: Path | None = None,
     ):
-        data_root = Path(__file__).resolve().parent.parent / "data"
+        # The default lives inside the image, which is wiped on every deploy.
+        # Teaching material is uploaded once and expected to stay: without
+        # KNOWLEDGE_PACK_DIR pointing at a mounted volume, every pack, chunk and
+        # source file silently disappears at the next release and the agent
+        # quietly reverts to knowing nothing.
+        configured_root = os.getenv("KNOWLEDGE_PACK_DIR", "").strip()
+        data_root = Path(configured_root) if configured_root else Path(__file__).resolve().parent.parent / "data"
         self.data_file = data_file or data_root / "knowledge_packs.json"
         self.chunks_file = chunks_file or data_root / "knowledge_pack_chunks.json"
         self.storage_dir = storage_dir or data_root / "knowledge_packs_files"
@@ -576,17 +585,23 @@ class KnowledgePackService:
 
         if normalized_scope == "system":
             normalized_owner_user_id = "system"
-            if normalized_domain != "reels":
+            # System knowledge used to be restricted to domain "reels" and the
+            # three reel task types. Retrieval was never that narrow -- it has
+            # always covered carousel, content_plan, profile_audit and
+            # performance_summary as well (RAG_TASK_TYPES) -- so the restriction
+            # only meant those functions could never be taught anything. A
+            # domain is now a free label for grouping material.
+            if not normalized_domain:
                 raise HTTPException(
                     status_code=400,
-                    detail="System knowledge domain 'reels' is required in phase 1",
+                    detail="domain is required for system knowledge, e.g. 'reels' or 'carousel'",
                 )
             if not normalized_supported_task_types:
-                normalized_supported_task_types = sorted(self.REELS_TASK_TYPES)
-            elif any(task_type not in self.REELS_TASK_TYPES for task_type in normalized_supported_task_types):
-                raise HTTPException(
-                    status_code=400,
-                    detail="System reels knowledge only supports reel_idea, reel_script, and reel_feedback in phase 1",
+                # An unlabelled pack would be retrievable by nothing, so it
+                # would upload cleanly and then never be read. Defaulting to
+                # every task that retrieves knowledge keeps it reachable.
+                normalized_supported_task_types = sorted(
+                    self.SUPPORTED_TASK_TYPES & RAG_TASK_TYPES
                 )
         elif not normalized_owner_user_id:
             raise HTTPException(status_code=400, detail="owner_user_id is required for knowledge pack upload")

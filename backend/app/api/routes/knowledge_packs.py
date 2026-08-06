@@ -194,11 +194,13 @@ async def upload_knowledge_pack(request: Request):
         visibility=visibility,
         status=status,
     )
-    if (
-        uploaded_pack.get("scope") == "system"
-        and uploaded_pack.get("domain") == "reels"
-        and uploaded_pack.get("visibility") == "internal"
-    ):
+    # Vectorised for every domain, not just reels. The gate used to require
+    # domain == "reels", so material uploaded to teach the agent about
+    # carousels, audits or planning was stored and then never ingested -- it sat
+    # on disk looking uploaded while retrieval found nothing. The retrieval side
+    # already covers those task types (see RAG_TASK_TYPES); only ingestion was
+    # narrower than the feature it fed.
+    if uploaded_pack.get("scope") == "system" and uploaded_pack.get("visibility") == "internal":
         try:
             langflow_service.ingest_system_reels_knowledge(
                 knowledge_pack_id=uploaded_pack["knowledge_pack_id"],

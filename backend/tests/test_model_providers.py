@@ -207,7 +207,9 @@ def test_llm_service_routes_non_openai_providers_to_the_registry(monkeypatch):
     from app.services.llm_service import LLMService
 
     monkeypatch.setenv("PRIMARY_LLM_PROVIDER", "anthropic")
-    stub = StubAnthropic(blocks=[SimpleNamespace(type="text", text="analysed")])
+    # profile_audit is schema-enforced, so the model answers with the JSON
+    # document rather than prose.
+    stub = StubAnthropic(blocks=[_schema_reply(reply="analysed", structured_output={"summary": "ok"})])
     providers.register_text_provider("anthropic", lambda: AnthropicTextProvider(client=stub))
 
     result = LLMService().run_agent(message="შეაფასე ჩემი გვერდი", task_type="profile_audit")
@@ -237,6 +239,111 @@ SCHEMA = {
     "required": ["reply", "structured_output"],
     "properties": {"reply": {"type": "string"}, "structured_output": {"type": "object"}},
 }
+
+# Every task whose shape is enforced rather than requested. Without a schema a
+# task falls back to heading parsing, which Sonnet 4.6 does not follow -- it
+# answers in markdown and the payload comes back empty.
+SCHEMA_ENFORCED_TASKS = [
+    "carousel",
+    "caption",
+    "profile_audit",
+    "content_plan",
+    "performance_summary",
+    "reel_idea",
+    "reel_script",
+    "reel_feedback",
+]
+
+
+def _sample_for(node):
+    """Smallest value satisfying ``node``, used to prove the schemas agree."""
+    node_type = node.get("type")
+    if node_type == "object":
+        return {name: _sample_for(sub) for name, sub in node.get("properties", {}).items()}
+    if node_type == "array":
+        return [_sample_for(node["items"])]
+    if node_type == "integer":
+        return 1
+    if node_type == "boolean":
+        return True
+    return "x"
+
+
+# ------------------------------------------------------- schema derivation
+
+
+@pytest.mark.parametrize("task_type", SCHEMA_ENFORCED_TASKS)
+def test_every_structured_task_has_an_enforced_schema(task_type):
+    from app.services.llm_service import LLMService
+
+    assert LLMService()._structured_schema(task_type) is not None
+
+
+@pytest.mark.parametrize("task_type", SCHEMA_ENFORCED_TASKS)
+def test_the_enforced_schema_is_narrower_than_the_validating_model(task_type):
+    """The property the whole design rests on.
+
+    The provider enforces one schema and ``validate_structured_output_payload``
+    then checks another. If the enforced one were the wider of the two, a
+    response could satisfy the provider and fail validation -- structured_output
+    silently becoming None, which is precisely the bug this path exists to stop.
+    Generating from the enforced schema and validating the result asserts the
+    direction directly instead of trusting that two definitions were kept in
+    step by hand.
+    """
+    from app.schemas.agent import validate_structured_output_payload
+    from app.services.llm_service import LLMService
+
+    schema = LLMService()._structured_schema(task_type)
+    sample = _sample_for(schema["properties"]["structured_output"])
+
+    validated, status, _ = validate_structured_output_payload(task_type, "parsed", sample)
+
+    assert validated is not None, f"{task_type}: enforced schema produced a payload validation rejects"
+    assert status == "parsed"
+
+
+@pytest.mark.parametrize("task_type", SCHEMA_ENFORCED_TASKS)
+def test_enforced_schemas_leave_no_field_optional(task_type):
+    """A partially-filled object must not be a valid answer: the customer is
+    paying for every field, and an absent one reads as a rendering bug later."""
+    from app.services.llm_service import LLMService
+
+    def assert_tight(node, path="structured_output"):
+        if node.get("type") == "object" and "properties" in node:
+            assert set(node["required"]) == set(node["properties"]), path
+            assert node["additionalProperties"] is False, path
+            for name, sub in node["properties"].items():
+                assert_tight(sub, f"{path}.{name}")
+        elif node.get("type") == "array":
+            assert_tight(node["items"], f"{path}[]")
+
+    assert_tight(LLMService()._structured_schema(task_type)["properties"]["structured_output"])
+
+
+def test_nested_models_are_inlined_rather_than_referenced():
+    """Whether a provider follows $defs is not worth discovering in production."""
+    import json
+
+    from app.services.llm_service import LLMService
+
+    rendered = json.dumps(LLMService()._structured_schema("content_plan"))
+
+    assert "$ref" not in rendered
+    assert "$defs" not in rendered
+    # the nested item model still made it through
+    items = LLMService()._structured_schema("content_plan")["properties"]["structured_output"]
+    assert "topic" in items["properties"]["content_items"]["items"]["properties"]
+
+
+def test_nullable_fields_collapse_so_the_model_cannot_answer_null():
+    """`str | None` on the validating model means "may be absent afterwards",
+    not "feel free to skip it"."""
+    from app.services.llm_service import LLMService
+
+    summary = LLMService()._structured_schema("profile_audit")["properties"]["structured_output"]["properties"]["summary"]
+
+    assert summary == {"type": "string"}
 
 
 def _schema_reply(**payload):
@@ -291,17 +398,51 @@ def test_the_customer_never_sees_the_raw_json():
     assert result["parse_status"] == "parsed"
 
 
-def test_a_malformed_schema_response_is_downgraded_not_raised():
-    """Discarding a generation the customer already paid for is worse than
-    falling back to parsing the text."""
-    client = StubAnthropic(blocks=[SimpleNamespace(type="text", text="not json at all")])
+def test_a_truncated_schema_response_fails_instead_of_showing_json():
+    """A cut-off document is a fragment like `{"reply":"Here's your 30-day...`.
 
-    result = AnthropicTextProvider(client=client).generate(
-        task_type="carousel", response_input=SECTIONS, max_output_tokens=1200, response_schema=SCHEMA
+    There is no prose to fall back to, so showing it is worse than an honest
+    failure -- and usage is charged on success only, so failing means the
+    customer is not billed for the fragment.
+    """
+    client = StubAnthropic(
+        blocks=[SimpleNamespace(type="text", text='{"reply":"Here\'s your 30-day plan for')],
+        stop_reason="max_tokens",
     )
 
-    assert result["reply"] == "not json at all"
-    assert result.get("structured_output") is None
+    with pytest.raises(ProviderError) as exc:
+        AnthropicTextProvider(client=client).generate(
+            task_type="content_plan", response_input=SECTIONS, max_output_tokens=1200, response_schema=SCHEMA
+        )
+
+    # Named distinctly: hitting the ceiling means our own token limit is too low
+    # for this task, which is invisible if reported as a generic failure.
+    assert exc.value.code == "generation_truncated"
+
+
+def test_an_unreadable_schema_response_is_reported_as_such():
+    client = StubAnthropic(blocks=[SimpleNamespace(type="text", text="not json at all")])
+
+    with pytest.raises(ProviderError) as exc:
+        AnthropicTextProvider(client=client).generate(
+            task_type="carousel", response_input=SECTIONS, max_output_tokens=1200, response_schema=SCHEMA
+        )
+
+    assert exc.value.code == "generation_unreadable"
+    assert "not json at all" not in exc.value.safe_message
+
+
+def test_schema_tasks_get_enough_room_for_their_widest_answer():
+    """JSON is more verbose than the prose these limits were tuned for, and a
+    truncated document loses the whole generation rather than its last line."""
+    from app.services.agent_response_formatter_service import MAX_CAROUSEL_SLIDES
+    from app.services.llm_service import LLMService
+
+    service = LLMService()
+    # 30 dated items, each carrying four fields, plus lists and a summary
+    assert service._max_output_tokens("content_plan") >= 4000
+    # every slide carries a headline, body and art direction
+    assert service._max_output_tokens("carousel") >= MAX_CAROUSEL_SLIDES * 120
 
 
 def test_carousel_is_one_of_the_schema_enforced_tasks():
@@ -329,20 +470,31 @@ def test_the_schema_reaches_the_provider(monkeypatch):
     assert "format" in stub.captured["output_config"]
 
 
-def test_registry_providers_return_structured_output_not_just_prose(monkeypatch):
-    """The parse step the registry path was missing.
+class ProseOnlyProvider:
+    """A provider that ignores ``response_schema``.
 
-    A registry provider returns prose; only the OpenAI path gets
-    ``structured_output`` back from the model itself. Without parsing here, a
-    carousel job received a reply with no slides and failed as "did not produce
-    any slides" -- a message that points at the model rather than at a parse
-    that never ran. This reached production.
+    The base contract permits this deliberately -- a provider that cannot
+    enforce a schema must not fail the request -- so the caller parses prose
+    itself. That path was missing entirely: the registry branch returned the
+    provider payload untouched, so a carousel job read ``structured_output``,
+    found nothing, and failed with "did not produce any slides", naming the
+    model rather than the parse that never ran. This reached production.
     """
+
+    name = "prose-only"
+
+    def __init__(self, reply):
+        self._reply = reply
+
+    def generate(self, *, task_type, response_input, max_output_tokens, response_schema=None):
+        return {"reply": self._reply, "model_provider": self.name, "model_name": "stub"}
+
+
+def test_a_provider_that_ignores_schemas_still_yields_structured_output(monkeypatch):
     from app.services.llm_service import LLMService
 
-    monkeypatch.setenv("PRIMARY_LLM_PROVIDER", "anthropic")
-    stub = StubAnthropic(blocks=[SimpleNamespace(type="text", text=CAROUSEL_REPLY)])
-    providers.register_text_provider("anthropic", lambda: AnthropicTextProvider(client=stub))
+    monkeypatch.setenv("PRIMARY_LLM_PROVIDER", "prose-only")
+    providers.register_text_provider("prose-only", lambda: ProseOnlyProvider(CAROUSEL_REPLY))
 
     result = LLMService().run_agent(message="გააკეთე კარუსელი", task_type="carousel")
 
@@ -353,18 +505,18 @@ def test_registry_providers_return_structured_output_not_just_prose(monkeypatch)
     assert result["parse_status"] == "parsed"
 
 
-def test_an_unparseable_reply_still_returns_the_generation(monkeypatch):
-    """The customer already paid for it. Losing the prose because the headings
-    were wrong would turn a formatting miss into a refund."""
+def test_an_unparseable_prose_reply_still_returns_the_generation(monkeypatch):
+    """Prose that will not parse is still prose. Discarding it because the
+    headings were wrong would turn a formatting miss into a refund -- unlike a
+    truncated JSON document, where nothing readable is left."""
     from app.services.llm_service import LLMService
 
-    monkeypatch.setenv("PRIMARY_LLM_PROVIDER", "anthropic")
-    stub = StubAnthropic(blocks=[SimpleNamespace(type="text", text="just some prose, no headings")])
-    providers.register_text_provider("anthropic", lambda: AnthropicTextProvider(client=stub))
+    monkeypatch.setenv("PRIMARY_LLM_PROVIDER", "prose-only")
+    providers.register_text_provider("prose-only", lambda: ProseOnlyProvider("just some prose, no headings"))
 
     result = LLMService().run_agent(message="hi", task_type="carousel")
 
-    assert result["reply"]
+    assert result["reply"] == "just some prose, no headings"
     assert result["parse_status"] == "raw_only"
     assert result["structured_output"] is None
 

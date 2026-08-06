@@ -141,28 +141,53 @@ class AnthropicTextProvider(TextProvider):
             "usage": self._extract_usage(message),
         }
         if response_schema:
-            result.update(self._unpack_schema_payload(text))
+            result.update(self._unpack_schema_payload(text, stop_reason=result["stop_reason"]))
         return result
 
-    def _unpack_schema_payload(self, text: str) -> dict[str, Any]:
+    def _unpack_schema_payload(self, text: str, *, stop_reason: str | None = None) -> dict[str, Any]:
         """Split a schema-constrained response into reply and structured output.
 
         With ``output_config.format`` the text block *is* the JSON document, so
         returning it unchanged would show the customer raw JSON where prose
         belongs.
 
-        A malformed document is downgraded rather than raised. The schema makes
-        it near-impossible, and discarding a generation the customer has already
-        paid for is worse than falling back to parsing the text.
+        An unparseable document raises rather than degrading. There is no prose
+        to fall back to -- a truncated document is a fragment like
+        ``{"reply":"Here's your 30-day plan for...`` and showing that is worse
+        than an honest failure. Usage is charged on success only, so failing here
+        also means the customer is not billed for it.
         """
         try:
             payload = json.loads(text)
-        except (TypeError, ValueError):
-            logger.warning("Schema-constrained response was not valid JSON; falling back to text parsing")
-            return {}
+        except (TypeError, ValueError) as exc:
+            # Distinguished because the causes need different responses: hitting
+            # the ceiling means MAX_OUTPUT_TOKENS_BY_TASK is too low for this
+            # task, which is ours to fix and invisible if reported as a generic
+            # failure.
+            truncated = stop_reason == "max_tokens"
+            logger.warning(
+                "Schema-constrained response was not valid JSON (stop_reason=%s, chars=%s)",
+                stop_reason,
+                len(text or ""),
+            )
+            raise ProviderError(
+                "AI generation was cut short before it finished. Please try again."
+                if truncated
+                else "AI generation returned an unreadable response. Please try again.",
+                provider=PROVIDER_NAME,
+                model_name=self.model_name,
+                status_code=502,
+                code="generation_truncated" if truncated else "generation_unreadable",
+            ) from exc
 
         if not isinstance(payload, dict):
-            return {}
+            raise ProviderError(
+                "AI generation returned an unreadable response. Please try again.",
+                provider=PROVIDER_NAME,
+                model_name=self.model_name,
+                status_code=502,
+                code="generation_unreadable",
+            )
 
         structured_output = payload.get("structured_output")
         return {

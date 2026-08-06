@@ -68,17 +68,26 @@ class LLMService:
         "reel_script": 4,
         "reel_feedback": 4,
     }
+    # Sized for the widest answer each task can legitimately produce, not the
+    # typical one. These were tuned when every task returned prose, where running
+    # out of room costs the last paragraph. A schema-enforced task returns JSON,
+    # where running out of room costs *everything*: the document is unparseable
+    # and the whole generation is lost. content_plan proved it -- 1400 tokens cut
+    # a 30-item plan mid-document, and the customer got a fragment of raw JSON.
     MAX_OUTPUT_TOKENS_BY_TASK = {
         "chat": 700,
-        "reel_idea": 1400,
-        "reel_script": 1300,
-        "reel_feedback": 1400,
-        "caption": 900,
-        "carousel": 1200,
-        "profile_audit": 1000,
-        "content_plan": 1400,
-        "link_analysis": 1000,
-        "performance_summary": 1000,
+        "reel_idea": 2200,
+        "reel_script": 2200,
+        "reel_feedback": 2200,
+        "caption": 1200,
+        # up to MAX_CAROUSEL_SLIDES slides, each with headline, body and art
+        # direction
+        "carousel": 3200,
+        "profile_audit": 2200,
+        # 30 dated items plus mix, hooks, CTAs and a summary
+        "content_plan": 4500,
+        "link_analysis": 1600,
+        "performance_summary": 2000,
     }
 
     def __init__(self, prompt_builder: LangflowService | None = None):
@@ -117,7 +126,102 @@ class LLMService:
         fallback_model = os.getenv("FALLBACK_LLM_MODEL", "").strip()
         return [fallback_model] if fallback_model else []
 
+    # Tasks whose shape is enforced by the provider rather than requested in
+    # prose. Derived from the Pydantic models that already validate the
+    # response: a hand-written copy that drifted would produce output the
+    # provider accepts and validation then rejects, leaving structured_output
+    # silently None -- exactly the failure this path exists to prevent.
+    # The prose the customer reads, kept separate from the data so neither has
+    # to be extracted from the other. The description states how the string is
+    # rendered rather than listing forbidden syntax: told only "string", the
+    # model reached for markdown headings and bold, which the customer then sees
+    # as literal asterisks. Describing the surface is what makes the right shape
+    # obvious.
+    _REPLY_PROPERTY = {
+        "type": "string",
+        "description": (
+            "One or two sentences of plain conversational prose introducing the result. "
+            "Displayed as-is in a chat surface that does not render markdown, so any "
+            "'#', '*' or table syntax reaches the customer as literal characters. "
+            "The findings themselves belong in structured_output; do not repeat them here."
+        ),
+    }
+
+    _MODEL_BACKED_SCHEMAS = {
+        "caption": "CaptionStructuredOutput",
+        "profile_audit": "ProfileAuditStructuredOutput",
+        "content_plan": "ContentPlanStructuredOutput",
+        "performance_summary": "PerformanceSummaryStructuredOutput",
+        "link_analysis": "LinkAnalysisStructuredOutput",
+    }
+
+    @staticmethod
+    def _tighten_schema(node: Any, defs: dict[str, Any]) -> Any:
+        """Rewrite a Pydantic JSON Schema into a provider-enforceable one.
+
+        Three transforms, each load-bearing:
+
+        * ``$ref`` is resolved inline. Whether a provider follows ``$defs`` is
+          not worth discovering in production.
+        * ``T | None`` collapses to ``T``. The generation schema is deliberately
+          *narrower* than the validating model -- narrowing is always safe
+          because anything produced still validates, whereas widening is what
+          lets an unvalidatable response through. It also stops the model
+          answering ``null`` for a field the customer is paying to have filled.
+        * Every property becomes required with ``additionalProperties: false``,
+          so a partially-filled object is not a valid answer.
+        """
+        if isinstance(node, list):
+            return [LLMService._tighten_schema(item, defs) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        if "$ref" in node:
+            ref_name = node["$ref"].rsplit("/", 1)[-1]
+            return LLMService._tighten_schema(defs[ref_name], defs)
+
+        if "anyOf" in node:
+            variants = [v for v in node["anyOf"] if v.get("type") != "null"]
+            if len(variants) == 1:
+                return LLMService._tighten_schema(variants[0], defs)
+            node = {**node, "anyOf": [LLMService._tighten_schema(v, defs) for v in variants]}
+
+        # `title` and `default` are Pydantic bookkeeping. `default` especially:
+        # it tells a model a field may be omitted, which is the opposite of what
+        # an enforced schema is for.
+        tightened = {
+            key: LLMService._tighten_schema(value, defs)
+            for key, value in node.items()
+            if key not in {"title", "default", "$defs"}
+        }
+
+        if tightened.get("type") == "object" and "properties" in tightened:
+            tightened["required"] = list(tightened["properties"])
+            tightened["additionalProperties"] = False
+
+        return tightened
+
+    @classmethod
+    def _schema_from_model(cls, model_name: str) -> dict[str, Any]:
+        from app.schemas import agent as agent_schemas
+
+        model = getattr(agent_schemas, model_name)
+        raw = model.model_json_schema()
+        return cls._tighten_schema(raw, raw.get("$defs", {}))
+
     def _structured_schema(self, task_type: str) -> dict[str, Any] | None:
+        model_name = self._MODEL_BACKED_SCHEMAS.get(task_type)
+        if model_name:
+            return {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["reply", "structured_output"],
+                "properties": {
+                    "reply": self._REPLY_PROPERTY,
+                    "structured_output": self._schema_from_model(model_name),
+                },
+            }
+
         schemas: dict[str, dict[str, Any]] = {
             # Carousel was the one structured task with no schema, so its shape
             # depended on the model following heading instructions ("Title:",
@@ -130,7 +234,7 @@ class LLMService:
                 "additionalProperties": False,
                 "required": ["reply", "structured_output"],
                 "properties": {
-                    "reply": {"type": "string"},
+                    "reply": self._REPLY_PROPERTY,
                     "structured_output": {
                         "type": "object",
                         "additionalProperties": False,
