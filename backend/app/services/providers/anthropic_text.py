@@ -38,9 +38,15 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 
 # Cheap tasks don't need deep reasoning; audits and plans do. Effort is the
 # cost/quality dial on 4.6 -- `medium` is the balanced default.
+# `caption` was `low`, which contradicted the quality bar it is now asked to
+# clear: the prompt demands a judgement about what the account is paid for and
+# copy specific enough to post, while the cheapest reasoning setting produces the
+# template answer the bar exists to reject. A live check returned "Life happens.
+# Coffee helps." with an engagement-bait CTA for an account whose stated goal was
+# DM orders. `chat` stays low -- it is conversation, not a deliverable.
 EFFORT_BY_TASK: dict[str, str] = {
     "chat": "low",
-    "caption": "low",
+    "caption": "medium",
     "reel_idea": "medium",
     "reel_script": "medium",
     "reel_feedback": "medium",

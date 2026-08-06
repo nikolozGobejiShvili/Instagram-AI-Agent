@@ -744,6 +744,7 @@ class LLMService:
                     niche=niche,
                     target_audience=target_audience,
                     goal=goal,
+                    has_playbook=bool(playbook_context),
                 ),
             },
             {
@@ -773,37 +774,34 @@ class LLMService:
                     link_context=link_context,
                 ),
             },
-            {
-                "name": "profile_context",
-                "role": "system",
-                "content": self.prompt_builder._format_profile_context(profile_context),
-            },
-            {
-                "name": "recent_posts_context",
-                "role": "system",
-                "content": self._format_recent_posts_context(recent_posts_context),
-            },
-            {
-                "name": "link_context",
-                "role": "system",
-                "content": self.prompt_builder._format_link_context(link_context),
-            },
-            {
-                "name": "recent_content_context",
-                "role": "system",
-                "content": self.prompt_builder._format_recent_content_context(recent_content_context),
-            },
-            {
-                "name": "internal_strategy_context",
-                "role": "system",
-                "content": self.prompt_builder._format_playbook_context(playbook_context),
-            },
-            {
-                "name": "reel_context",
-                "role": "system",
-                "content": self.prompt_builder._format_reel_context(reel_context),
-            },
         ])
+
+        # Context sections are appended only when the context exists.
+        #
+        # They used to be unconditional, so an account with nothing connected
+        # received seven system sections reading "not available" plus a
+        # context_notice repeating the same absence in prose -- absence stated
+        # eight times against two short lines of actual fact. A live caption
+        # request with niche and goal both supplied came back generic and
+        # ignored them both, which is the behaviour that prompt invites: told
+        # mostly what it does not have, the model concludes it has nothing
+        # specific and writes a template.
+        #
+        # context_notice still states what is missing, once, in one place. The
+        # condition is on the context object rather than on the formatted string
+        # so this cannot drift when an "unavailable" wording changes.
+        optional_context = [
+            ("profile_context", profile_context, self.prompt_builder._format_profile_context),
+            ("recent_posts_context", recent_posts_context, self._format_recent_posts_context),
+            ("link_context", link_context, self.prompt_builder._format_link_context),
+            ("recent_content_context", recent_content_context, self.prompt_builder._format_recent_content_context),
+            ("internal_strategy_context", playbook_context, self.prompt_builder._format_playbook_context),
+            ("reel_context", reel_context, self.prompt_builder._format_reel_context),
+        ]
+        for name, context, formatter in optional_context:
+            if not context:
+                continue
+            sections.append({"name": name, "role": "system", "content": formatter(context)})
 
         request_overrides = []
         if niche:

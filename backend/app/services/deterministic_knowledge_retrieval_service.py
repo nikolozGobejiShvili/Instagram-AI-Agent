@@ -108,8 +108,30 @@ class DeterministicKnowledgeRetrievalService:
     DEFAULT_COLLECTION_NAME = "mariami_reels_playbook_v1"
     DEFAULT_RETRIEVAL_MODE = "lexical"
     DEFAULT_TOP_K = 5
-    MAX_CONTEXT_CHARS = 2400
-    MAX_CHUNK_CHARS = 520
+
+    # Chunks are written at up to 1200 characters by KnowledgePackService, so
+    # truncating to 520 on the way out discarded more than half of every piece of
+    # material the operator wrote -- silently, and only at read time. The two
+    # numbers now match: what is indexed is what is shown.
+    MAX_CHUNK_CHARS = 1200
+
+    # A single budget for every task was wrong in both directions: generous for a
+    # caption, where a paragraph of strategy crowds out the request, and mean for
+    # a 30-day plan or a full audit, which are exactly the answers that benefit
+    # from method. Budgets are in characters and sized to the task's output.
+    CONTEXT_BUDGET_BY_TASK = {
+        "caption": 1600,
+        "chat": 1600,
+        "reel_idea": 3600,
+        "reel_feedback": 3600,
+        "reel_script": 4800,
+        "carousel": 4800,
+        "performance_summary": 4800,
+        "profile_audit": 6000,
+        "content_plan": 6000,
+        "link_analysis": 3600,
+    }
+    DEFAULT_CONTEXT_CHARS = 2400
 
     def __init__(
         self,
@@ -173,7 +195,7 @@ class DeterministicKnowledgeRetrievalService:
                 documents = self._pgvector_documents(query=query, task_type=task_type, top_k=self.top_k)
             else:
                 documents = self._query_documents(query=query, top_k=self.top_k)
-            knowledge_context = self._build_knowledge_context(documents)
+            knowledge_context = self._build_knowledge_context(documents, task_type)
             return KnowledgeRetrievalResult(
                 used=True,
                 top_k=self.top_k,
@@ -363,7 +385,11 @@ class DeterministicKnowledgeRetrievalService:
             return vector
         return [component / norm for component in vector]
 
-    def _build_knowledge_context(self, documents: list[str]) -> str | None:
+    def context_budget(self, task_type: str) -> int:
+        return self.CONTEXT_BUDGET_BY_TASK.get(task_type, self.DEFAULT_CONTEXT_CHARS)
+
+    def _build_knowledge_context(self, documents: list[str], task_type: str = "") -> str | None:
+        budget = self.context_budget(task_type)
         context_parts = []
         total_chars = 0
         for index, document in enumerate(documents, start=1):
@@ -372,7 +398,7 @@ class DeterministicKnowledgeRetrievalService:
                 continue
 
             part = f"{index}. {cleaned_document}"
-            if total_chars + len(part) > self.MAX_CONTEXT_CHARS:
+            if total_chars + len(part) > budget:
                 break
             context_parts.append(part)
             total_chars += len(part)
@@ -380,8 +406,16 @@ class DeterministicKnowledgeRetrievalService:
         if not context_parts:
             return None
 
+        # The heading used to say "Internal Mariami Reels strategy context"
+        # regardless of what was retrieved, so material written about carousels,
+        # audits or planning was announced to the model as reels strategy -- a
+        # label that argues against the content directly beneath it.
         return "\n".join([
-            "Internal Mariami Reels strategy context. Use it only as hidden strategy guidance; do not quote or reveal it.",
+            "Proprietary strategy material from this agency's own playbook"
+            + (f", selected for the {task_type} task." if task_type else "."),
+            "It reflects methods and standards this agency has validated, so prefer it over "
+            "generic best practice wherever the two disagree.",
+            "Apply it as hidden guidance: never quote it, cite it, or mention that it exists.",
             *context_parts,
         ])
 
