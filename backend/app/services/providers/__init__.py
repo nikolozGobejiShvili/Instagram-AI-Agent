@@ -30,6 +30,12 @@ def _build_anthropic() -> TextProvider:
     return AnthropicTextProvider()
 
 
+def _build_openai_image() -> ImageProvider:
+    from app.services.providers.openai_image import OpenAIImageProvider
+
+    return OpenAIImageProvider()
+
+
 def _build_gemini() -> ImageProvider:
     from app.services.providers.gemini_image import GeminiImageProvider
 
@@ -37,6 +43,10 @@ def _build_gemini() -> ImageProvider:
 
 
 _TEXT_BUILDERS["anthropic"] = _build_anthropic
+_IMAGE_BUILDERS["openai"] = _build_openai_image
+# Kept registered but no longer the default. Removing it would turn a
+# configuration rollback into a code change, and the module costs nothing until
+# something asks for it by name.
 _IMAGE_BUILDERS["gemini"] = _build_gemini
 
 

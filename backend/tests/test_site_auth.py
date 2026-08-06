@@ -116,9 +116,17 @@ def test_every_mounted_api_route_is_guarded():
         if getattr(route, "path", "").startswith("/api/v1") and not is_guarded(route.path)
     ]
 
-    assert unguarded == ["/api/v1/carousel-media/{asset_id}"], (
-        f"unexpectedly unguarded API routes: {unguarded}"
-    )
+    # Each exemption is listed here rather than pattern-matched, so adding one
+    # is a deliberate edit to this assertion and not a silent widening.
+    assert sorted(unguarded) == [
+        # loads in <img src="...">, which cannot send a header; the 128-bit
+        # opaque asset id is the credential
+        "/api/v1/carousel-media/{asset_id}",
+        # Stripe cannot send a site key; the signature over the raw body
+        # authenticates it instead, and payment_service refuses every event when
+        # no signing secret is set
+        "/api/v1/payments/stripe/webhook",
+    ], f"unexpectedly unguarded API routes: {unguarded}"
 
 
 def test_admin_routes_require_their_own_key_on_top_of_the_site_key(monkeypatch):

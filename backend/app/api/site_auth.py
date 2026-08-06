@@ -43,7 +43,15 @@ GUARDED_PREFIX = "/api/v1"
 # 128 bits of opaque randomness minted per render, so the URL is the credential.
 # Guarding this path would not add security, it would just stop the images from
 # appearing.
-EXEMPT_PREFIXES = ("/api/v1/carousel-media/",)
+EXEMPT_PREFIXES = (
+    "/api/v1/carousel-media/",
+    # Stripe cannot send a site key. Its request is authenticated by the
+    # signature over the raw body instead, which is stronger -- it proves the
+    # payload came from Stripe unmodified, where a shared header only proves the
+    # caller had it. See payment_service.verify_signature, which refuses every
+    # event when no signing secret is set precisely because this path is open.
+    "/api/v1/payments/stripe/webhook",
+)
 
 
 def site_key() -> str:

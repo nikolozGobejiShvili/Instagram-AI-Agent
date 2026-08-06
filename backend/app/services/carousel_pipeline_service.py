@@ -50,9 +50,11 @@ class CarouselPipelineService:
         if self._image_provider is not None:
             return self._image_provider
         try:
+            import os
+
             from app.services.providers import get_image_provider
 
-            return get_image_provider("gemini")
+            return get_image_provider(os.getenv("IMAGE_PROVIDER", "").strip() or "openai")
         except Exception as exc:  # noqa: BLE001 - absence is a valid state here
             logger.warning("Carousel image provider unavailable: %s", exc)
             return None

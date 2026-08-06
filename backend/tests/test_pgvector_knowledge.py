@@ -100,20 +100,107 @@ def _store(rows=()):
 
 
 def test_embedding_dimensions_match_the_named_model():
-    assert EmbeddingService(model="text-embedding-3-small", api_key="k").dimensions == 1536
-    assert EmbeddingService(model="text-embedding-3-large", api_key="k").dimensions == 3072
+    assert EmbeddingService(provider="openai", model="text-embedding-3-small", api_key="k").dimensions == 1536
+    assert EmbeddingService(provider="openai", model="text-embedding-3-large", api_key="k").dimensions == 3072
+    assert EmbeddingService(provider="voyage", model="voyage-4", api_key="k").dimensions == 1024
 
 
-def test_a_missing_key_is_a_configuration_error_not_a_failure():
-    """Retrying will not help until an operator sets the key, so it must not
-    look like a transient provider fault."""
-    with pytest.raises(EmbeddingNotConfigured):
+def test_voyage_is_the_default_provider(monkeypatch):
+    """Anthropic publishes no embeddings model and names Voyage as the provider
+    to use instead. The deciding factor is Georgian, though: voyage-4 is trained
+    for multilingual retrieval and text-embedding-3-small is not."""
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("KNOWLEDGE_RETRIEVAL_EMBEDDING_MODEL", raising=False)
+
+    service = EmbeddingService(api_key="k")
+
+    assert service.provider == "voyage"
+    assert service.model == "voyage-4"
+
+
+def test_the_error_names_the_key_the_active_provider_needs(monkeypatch):
+    """Telling a Voyage deployment to set OPENAI_API_KEY sends the operator to
+    the wrong dashboard."""
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+
+    with pytest.raises(EmbeddingNotConfigured, match="VOYAGE_API_KEY"):
         EmbeddingService(api_key="").embed(["hello"])
+
+    with pytest.raises(EmbeddingNotConfigured, match="OPENAI_API_KEY"):
+        EmbeddingService(provider="openai", api_key="").embed(["hello"])
+
+
+def test_an_unknown_provider_is_refused_rather_than_silently_defaulted():
+    with pytest.raises(EmbeddingNotConfigured, match="Unknown embedding provider"):
+        EmbeddingService(provider="cohere", api_key="k")
 
 
 def test_no_texts_needs_no_credential():
     """An empty pack must not demand an API key to do nothing."""
     assert EmbeddingService(api_key="").embed([]) == []
+
+
+def test_voyage_is_told_whether_it_is_embedding_a_document_or_a_query(monkeypatch):
+    """Voyage prepends a different instruction for each, and its docs are
+    explicit that omitting it costs retrieval quality -- a store that embedded
+    both sides identically would still work, just worse, which is the kind of
+    loss nobody notices."""
+    sent = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"index": 0, "embedding": [0.1] * 1024}]}
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            sent.update(json)
+            return Response()
+
+    monkeypatch.setattr(embedding_module.httpx, "Client", lambda **kwargs: Client())
+    service = EmbeddingService(provider="voyage", api_key="k")
+
+    service.embed(["stored material"])
+    assert sent["input_type"] == "document"
+
+    service.embed_one("a search")
+    assert sent["input_type"] == "query"
+
+
+def test_openai_is_not_sent_a_parameter_it_does_not_accept(monkeypatch):
+    sent = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"index": 0, "embedding": [0.1] * 1536}]}
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            sent.update(json)
+            return Response()
+
+    monkeypatch.setattr(embedding_module.httpx, "Client", lambda **kwargs: Client())
+
+    EmbeddingService(provider="openai", api_key="k").embed(["x"])
+
+    assert "input_type" not in sent
 
 
 def test_vectors_are_returned_in_the_order_they_were_asked_for(monkeypatch):
@@ -145,7 +232,7 @@ def test_vectors_are_returned_in_the_order_they_were_asked_for(monkeypatch):
 
     monkeypatch.setattr(embedding_module.httpx, "Client", lambda **kwargs: Client())
 
-    vectors = EmbeddingService(api_key="k").embed(["a", "b", "c"])
+    vectors = EmbeddingService(provider="openai", api_key="k").embed(["a", "b", "c"])
 
     assert [round(v[0], 1) for v in vectors] == [0.1, 0.2, 0.3]
 
@@ -173,7 +260,7 @@ def test_a_wrong_width_is_rejected_rather_than_stored(monkeypatch):
     monkeypatch.setattr(embedding_module.httpx, "Client", lambda **kwargs: Client())
 
     with pytest.raises(EmbeddingFailed, match="dimension"):
-        EmbeddingService(api_key="k").embed(["a"])
+        EmbeddingService(provider="openai", api_key="k").embed(["a"])
 
 
 # --------------------------------------------------------------------- schema

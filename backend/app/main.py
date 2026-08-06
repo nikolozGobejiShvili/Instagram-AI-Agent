@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -32,6 +33,7 @@ from app.api.routes.profile_context import router as profile_context_router
 from app.api.routes.carousel_media import router as carousel_media_router  # noqa: E402
 from app.api.routes.marketing_brief import router as marketing_brief_router  # noqa: E402
 from app.api.routes.generation_jobs import job_worker, router as generation_jobs_router  # noqa: E402
+from app.api.routes.payments import router as payments_router  # noqa: E402
 from app.error_handling import http_exception_handler, request_validation_handler, unhandled_exception_handler  # noqa: E402
 from app.api.routes.link_context import router as link_context_router  # noqa: E402
 
@@ -44,6 +46,16 @@ async def lifespan(_app: FastAPI):
     explicitly so results are deterministic, and a deployment that runs the
     worker as a separate process wants the web replicas to leave it alone.
     """
+    # Logged because "we thought user tokens were on" is exactly the assumption
+    # that turns a website bug into a cross-account charge. The mode the service
+    # is actually running in should never have to be inferred.
+    from app.api.user_auth import enforcement_enabled
+
+    logging.getLogger(__name__).info(
+        "user identity enforcement: %s",
+        "on (X-User-Token required)" if enforcement_enabled() else "OFF (user_id trusted from request body)",
+    )
+
     worker_enabled = os.getenv("JOB_WORKER_ENABLED", "true").strip().lower() == "true"
     if worker_enabled:
         job_worker.start()
@@ -75,6 +87,7 @@ app.include_router(carousel_media_router)
 app.include_router(marketing_brief_router)
 app.include_router(generation_history_router)
 app.include_router(generation_jobs_router)
+app.include_router(payments_router)
 app.include_router(internal_generation_debug_router)
 app.include_router(knowledge_packs_router)
 app.include_router(maintenance_router)

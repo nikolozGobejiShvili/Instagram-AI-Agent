@@ -12,8 +12,9 @@ Contract for the website: POST returns **202 Accepted** with a job id, then poll
 """
 import logging
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 
+from app.api.user_auth import enforcement_enabled, resolve_user_id
 from app.schemas.api_error import STANDARD_ERROR_RESPONSES
 from app.schemas.generation_job import (
     GenerationJobCreateRequest,
@@ -151,16 +152,21 @@ job_worker = JobWorker(
     status_code=status.HTTP_202_ACCEPTED,
     responses=STANDARD_ERROR_RESPONSES,
 )
-def create_generation_job(payload: GenerationJobCreateRequest, response: Response):
+def create_generation_job(payload: GenerationJobCreateRequest, response: Response, request: Request):
+    # The token decides whose credits are spent, not the body. This is the route
+    # that costs money, so it is the one where a website sending a stale user_id
+    # must be refused rather than obeyed.
+    user_id = resolve_user_id(request, payload.user_id)
+
     # Entitlement is enforced before the job is accepted, so an over-quota or
     # unentitled caller gets an immediate, honest refusal instead of a queued job
     # that fails later.
-    plan = billing_service.enforce_agent_access(payload.user_id, payload.task_type)
+    plan = billing_service.enforce_agent_access(user_id, payload.task_type)
 
     # A carousel needs the render pipeline; everything else is text only.
     kind = CAROUSEL_GENERATION if payload.task_type == "carousel" else AGENT_GENERATION
 
-    job_payload = payload.model_dump()
+    job_payload = {**payload.model_dump(), "user_id": user_id}
     if kind == CAROUSEL_GENERATION:
         # Clamped at accept time so the model is *asked* for a count the plan
         # allows. Trimming after generation alone would still pay Sonnet to write
@@ -172,7 +178,7 @@ def create_generation_job(payload: GenerationJobCreateRequest, response: Respons
         )
 
     job = job_service.enqueue(
-        user_id=payload.user_id,
+        user_id=user_id,
         kind=kind,
         payload=job_payload,
     )
@@ -181,16 +187,33 @@ def create_generation_job(payload: GenerationJobCreateRequest, response: Respons
 
 
 @router.get("/{job_id}", response_model=GenerationJobResponse, responses=STANDARD_ERROR_RESPONSES)
-def get_generation_job(job_id: str):
+def get_generation_job(job_id: str, request: Request):
     job = job_service.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Generation job '{job_id}' was not found")
+
+    # Ownership is checked, and a job belonging to someone else answers 404
+    # rather than 403: 403 would confirm the id exists, which turns a failed
+    # guess into a positive result.
+    if enforcement_enabled():
+        owner = resolve_user_id(request, None)
+        if job.get("user_id") != owner:
+            raise HTTPException(status_code=404, detail=f"Generation job '{job_id}' was not found")
+
     return _serialize(job)
 
 
 @router.get("", response_model=GenerationJobListResponse, responses=STANDARD_ERROR_RESPONSES)
-def list_generation_jobs(user_id: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=200)):
-    return {"jobs": [_serialize(job) for job in job_service.list_for_user(user_id, limit=limit)]}
+def list_generation_jobs(
+    request: Request,
+    user_id: str | None = Query(default=None, min_length=1),
+    limit: int = Query(50, ge=1, le=200),
+):
+    # With enforcement on, the query parameter cannot select whose jobs are
+    # listed -- otherwise the whole token is a formality on the one endpoint
+    # that returns another customer's finished work.
+    resolved = resolve_user_id(request, user_id)
+    return {"jobs": [_serialize(job) for job in job_service.list_for_user(resolved, limit=limit)]}
 
 
 def _serialize(job: dict) -> dict:
