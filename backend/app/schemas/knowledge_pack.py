@@ -71,6 +71,12 @@ class KnowledgePackResponse(BaseModel):
     supported_task_types: list[TaskType] = Field(default_factory=list)
     uploaded_files: list[KnowledgePackFileMetadata] = Field(default_factory=list)
     total_chunks: int = 0
+    # How many chunks reached the vector store. Reported because a pack that
+    # stored but did not index looks identical to a healthy one in every
+    # listing, while being invisible to retrieval -- so 0 here against a
+    # non-zero total_chunks is the signal that the agent was not actually
+    # taught anything. Null when no vector store is configured.
+    indexed_chunk_count: int | None = None
     created_at: str
     updated_at: str
 
