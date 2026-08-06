@@ -1,5 +1,6 @@
 import json
 import importlib.util
+import logging
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -13,6 +14,8 @@ from app.schemas.knowledge_pack import (
 from app.services.knowledge_pack_service import KnowledgePackService
 from app.services.langflow_service import LangflowService, LangflowServiceError
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1/internal/knowledge-packs", tags=["internal-knowledge-packs"])
 
 knowledge_pack_service = KnowledgePackService()
@@ -23,6 +26,42 @@ MULTIPART_AVAILABLE = bool(importlib.util.find_spec("multipart"))
 # one implementation. Kept under the original private name because the handlers
 # below call it directly.
 _require_internal_admin_access = require_internal_admin_access
+
+
+def _index_into_vector_store(uploaded_pack: dict) -> None:
+    """Embed the pack's chunks into the shared store.
+
+    Runs only when KNOWLEDGE_VECTOR_STORE=pgvector, so a deployment still on
+    Chroma is unaffected.
+
+    A failure here does not fail the upload. The material is already saved and
+    can be reindexed; discarding a file the operator just uploaded because an
+    embedding call timed out would be a worse trade. It is logged at error level
+    because an un-indexed pack is invisible to retrieval and otherwise looks
+    fine in every listing.
+    """
+    import os
+
+    if os.getenv("KNOWLEDGE_VECTOR_STORE", "").strip().lower() != "pgvector":
+        return
+
+    from app.services.pgvector_knowledge_store import PgVectorKnowledgeStore
+
+    knowledge_pack_id = uploaded_pack["knowledge_pack_id"]
+    try:
+        indexed = PgVectorKnowledgeStore().index_pack(
+            knowledge_pack_id=knowledge_pack_id,
+            chunks=knowledge_pack_service.get_pack_chunks(knowledge_pack_id),
+        )
+        uploaded_pack["indexed_chunk_count"] = indexed
+    except Exception as exc:  # noqa: BLE001 - the upload itself must survive
+        logger.error(
+            "Knowledge pack stored but NOT indexed knowledge_pack_id=%s error=%s: %s",
+            knowledge_pack_id,
+            type(exc).__name__,
+            exc,
+        )
+        uploaded_pack["indexed_chunk_count"] = 0
 
 
 def _parse_supported_task_types(value: str | None) -> list[str]:
@@ -201,6 +240,7 @@ async def upload_knowledge_pack(request: Request):
     # already covers those task types (see RAG_TASK_TYPES); only ingestion was
     # narrower than the feature it fed.
     if uploaded_pack.get("scope") == "system" and uploaded_pack.get("visibility") == "internal":
+        _index_into_vector_store(uploaded_pack)
         try:
             langflow_service.ingest_system_reels_knowledge(
                 knowledge_pack_id=uploaded_pack["knowledge_pack_id"],

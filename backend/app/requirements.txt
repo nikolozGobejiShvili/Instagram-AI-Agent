@@ -27,6 +27,11 @@ python-docx==1.2.0
 # --- retrieval ---
 # Imported lazily by deterministic_knowledge_retrieval_service; was missing here.
 chromadb==1.5.8
+# pgvector store. Chroma is per-container and this system runs two (the API and
+# Langflow), so each would have indexed into its own directory and neither could
+# read the other's. Postgres is the shared store; pgvector 0.8.6 is what the
+# Railway image provides.
+psycopg[binary]==3.2.3
 
 # --- tests ---
 pytest==9.0.3

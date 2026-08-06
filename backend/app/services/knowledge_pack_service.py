@@ -824,6 +824,15 @@ class KnowledgePackService:
             "deleted": True,
         }
 
+    def get_pack_chunks(self, knowledge_pack_id: str) -> list[dict]:
+        """The pack's chunks, ready to be embedded.
+
+        Chunking already happens at upload, so the vector store indexes exactly
+        the text retrieval will return -- re-splitting it elsewhere would mean
+        searching one set of boundaries and quoting another.
+        """
+        return list(self._load_chunks().get(knowledge_pack_id, []))
+
     def get_pack_file_paths(self, knowledge_pack_id: str) -> list[str]:
         packs = self._load_packs()
         pack = packs.get(knowledge_pack_id)

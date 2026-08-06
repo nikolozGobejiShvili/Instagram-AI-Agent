@@ -157,7 +157,7 @@ class DeterministicKnowledgeRetrievalService:
                 used=False,
                 top_k=None,
                 retrieved_count=0,
-                collection_name=self.collection_name,
+                collection_name=self._store_label(),
             )
 
         try:
@@ -169,13 +169,16 @@ class DeterministicKnowledgeRetrievalService:
                 recent_posts_context=recent_posts_context,
                 recent_content_context=recent_content_context,
             )
-            documents = self._query_documents(query=query, top_k=self.top_k)
+            if self._vector_store() == "pgvector":
+                documents = self._pgvector_documents(query=query, task_type=task_type, top_k=self.top_k)
+            else:
+                documents = self._query_documents(query=query, top_k=self.top_k)
             knowledge_context = self._build_knowledge_context(documents)
             return KnowledgeRetrievalResult(
                 used=True,
                 top_k=self.top_k,
                 retrieved_count=len(documents),
-                collection_name=self.collection_name,
+                collection_name=self._store_label(),
                 knowledge_context=knowledge_context,
             )
         except Exception as exc:
@@ -189,7 +192,7 @@ class DeterministicKnowledgeRetrievalService:
                 used=True,
                 top_k=self.top_k,
                 retrieved_count=0,
-                collection_name=self.collection_name,
+                collection_name=self._store_label(),
                 error_type=type(exc).__name__,
             )
 
@@ -223,6 +226,36 @@ class DeterministicKnowledgeRetrievalService:
                 query_parts.append(str(post.get("topic") or post.get("content_type") or ""))
 
         return self._safe_truncate(" ".join(part for part in query_parts if part).strip(), 900) or message
+
+    def _store_label(self) -> str:
+        """What the debug record should name as the source.
+
+        Reporting the Chroma collection while actually querying Postgres would
+        send anyone diagnosing an empty result to the wrong store.
+        """
+        if self._vector_store() == "pgvector":
+            from app.services.pgvector_knowledge_store import TABLE_NAME
+
+            return f"pgvector:{TABLE_NAME}"
+        return self.collection_name
+
+    def _vector_store(self) -> str:
+        """Where vectors live. Chroma stays the default so existing deployments
+        keep working; pgvector is opt-in per environment."""
+        return (os.getenv("KNOWLEDGE_VECTOR_STORE", "").strip().lower() or "chroma")
+
+    def _pgvector_documents(self, *, query: str, task_type: str, top_k: int) -> list[str]:
+        """Shared-store retrieval.
+
+        The task type is pushed into the SQL rather than applied to the results:
+        filtering afterwards means asking for five chunks, receiving five, and
+        keeping only the two that belong to this task -- which looks like a
+        ranking problem and is actually a query problem.
+        """
+        from app.services.pgvector_knowledge_store import PgVectorKnowledgeStore
+
+        chunks = PgVectorKnowledgeStore().search(query=query, task_type=task_type, top_k=top_k)
+        return [chunk.content for chunk in chunks if chunk.content.strip()]
 
     def _query_documents(self, *, query: str, top_k: int) -> list[str]:
         import chromadb
