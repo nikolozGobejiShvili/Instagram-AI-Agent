@@ -27,6 +27,7 @@ import os
 from dataclasses import dataclass
 
 from app.services.embedding_service import EmbeddingService
+from app.services.reranker_service import DEFAULT_CANDIDATE_POOL, RerankerService
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,20 @@ class PgVectorNotConfigured(RuntimeError):
 
 
 class PgVectorKnowledgeStore:
-    def __init__(self, *, dsn: str | None = None, embedding_service: EmbeddingService | None = None):
+    def __init__(
+        self,
+        *,
+        dsn: str | None = None,
+        embedding_service: EmbeddingService | None = None,
+        reranker: RerankerService | None = None,
+        candidate_pool: int | None = None,
+    ):
         self._dsn = dsn if dsn is not None else os.getenv("KNOWLEDGE_DATABASE_URL", "").strip() or os.getenv("DATABASE_URL", "").strip()
         self.embeddings = embedding_service or EmbeddingService()
+        self.reranker = reranker or RerankerService()
+        self.candidate_pool = int(
+            candidate_pool or os.getenv("KNOWLEDGE_CANDIDATE_POOL", "").strip() or DEFAULT_CANDIDATE_POOL
+        )
 
     def is_configured(self) -> bool:
         return bool(self._dsn) and self.embeddings.is_configured()
@@ -176,7 +188,21 @@ class PgVectorKnowledgeStore:
 
     # --------------------------------------------------------------- retrieval
     def search(self, *, query: str, task_type: str, top_k: int) -> list[RetrievedChunk]:
-        query_vector = "[" + ",".join(f"{value:.7f}" for value in self.embeddings.embed_one(query)) + "]"
+        """Recall wide by vector, then rerank and keep only what is relevant.
+
+        The single-stage version could not return nothing: ``ORDER BY distance
+        LIMIT k`` always yields k rows, so a carousel question retrieved the five
+        least-unrelated reels passages and injected them. Every one of those
+        competes with the instructions for the model's attention, which is how a
+        rule ends up skipped.
+
+        So the vector stage now recalls a wide pool — the thing it is actually
+        good at — and a reranker, which reads query and passage together, decides
+        what survives. Fewer passages reach the prompt, and when the material
+        does not cover the question, none do.
+        """
+        pool = max(int(top_k), self.candidate_pool)
+        query_vector = "[" + ",".join(f"{v:.7f}" for v in self.embeddings.embed_one(query)) + "]"
 
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -190,11 +216,11 @@ class PgVectorKnowledgeStore:
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s
                     """,
-                    (query_vector, self.embeddings.model, task_type, query_vector, int(top_k)),
+                    (query_vector, self.embeddings.model, task_type, query_vector, pool),
                 )
                 rows = cur.fetchall()
 
-        return [
+        candidates = [
             RetrievedChunk(
                 content=row[0],
                 chunk_label=row[1],
@@ -203,6 +229,33 @@ class PgVectorKnowledgeStore:
                 score=float(row[4]),
             )
             for row in rows
+        ]
+        if not candidates:
+            return []
+
+        ranked = self.reranker.rank(
+            query=query,
+            documents=[c.content for c in candidates],
+            top_k=int(top_k),
+        )
+        if ranked is None:
+            # Reranking was unavailable, not empty. Falling back to vector order
+            # is worse retrieval; treating it as "nothing relevant" would be a
+            # silent loss of the knowledge base whenever the ranker is down.
+            return candidates[: int(top_k)]
+
+        return [
+            RetrievedChunk(
+                content=candidates[p.index].content,
+                chunk_label=candidates[p.index].chunk_label,
+                knowledge_pack_title=candidates[p.index].knowledge_pack_title,
+                knowledge_pack_id=candidates[p.index].knowledge_pack_id,
+                # The reranker's score, not the cosine one: this is what decided
+                # inclusion, so it is what any later debugging needs to see.
+                score=p.score,
+            )
+            for p in ranked
+            if 0 <= p.index < len(candidates)
         ]
 
     def stats(self) -> dict:

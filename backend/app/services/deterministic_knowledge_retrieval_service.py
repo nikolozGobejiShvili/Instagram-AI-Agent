@@ -107,7 +107,12 @@ def should_use_knowledge_retrieval(task_type: str | None, message: str | None) -
 class DeterministicKnowledgeRetrievalService:
     DEFAULT_COLLECTION_NAME = "mariami_reels_playbook_v1"
     DEFAULT_RETRIEVAL_MODE = "lexical"
-    DEFAULT_TOP_K = 5
+    # Three, not five. Five was a hedge against the ranking being wrong: take
+    # more and hope the right passage is in there. With a reranker deciding what
+    # survives, the extra two are no longer insurance — they are two more
+    # paragraphs competing with the instructions for the model's attention, which
+    # is how a rule gets skipped. Better ranking buys a shorter prompt.
+    DEFAULT_TOP_K = 3
 
     # Chunks are written at up to 1200 characters by KnowledgePackService, so
     # truncating to 520 on the way out discarded more than half of every piece of
