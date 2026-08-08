@@ -16,6 +16,10 @@ TaskType = Literal[
     "content_plan",
     "link_analysis",
     "performance_summary",
+    # Reads a named public business account through Meta's business_discovery and
+    # adapts what transfers. Distinct from link_analysis, which takes a URL to a
+    # single post: this is about how a whole account is assembled.
+    "public_profile_analysis",
 ]
 
 ParseStatus = Literal["parsed", "partial", "raw_only"]
@@ -153,6 +157,31 @@ class LinkAnalysisStructuredOutput(BaseModel):
     summary: str | None = None
 
 
+class PublicProfileAnalysisStructuredOutput(BaseModel):
+    """"Build my shop the way Nike's page is built."
+
+    Shaped around what transfers rather than what was observed: a list of facts
+    about the reference account is a report, and the customer asked for a plan.
+    Every field except `positioning` is about *their* account.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reference_handle: str | None = None
+    # How the reference account presents itself — the one field describing them.
+    positioning: str | None = None
+    # The repeatable mechanics: content mix, hook patterns, caption structure,
+    # posting rhythm. These are what a smaller account can actually copy.
+    content_patterns: list[str] = Field(default_factory=list)
+    hook_patterns: list[str] = Field(default_factory=list)
+    # Named separately because scale is the usual trap: a global brand's tactics
+    # often work only because it is a global brand.
+    what_does_not_transfer: list[str] = Field(default_factory=list)
+    adapted_plan: list[str] = Field(default_factory=list)
+    first_three_posts: list[str] = Field(default_factory=list)
+    summary: str | None = None
+
+
 class PerformanceSummaryStructuredOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -174,6 +203,7 @@ StructuredOutput = (
     | ContentPlanStructuredOutput
     | LinkAnalysisStructuredOutput
     | PerformanceSummaryStructuredOutput
+    | PublicProfileAnalysisStructuredOutput
     | dict[str, Any]
 )
 
@@ -931,6 +961,9 @@ def validate_structured_output_payload(
         "content_plan": (ContentPlanStructuredOutput, _coerce_content_plan_structured_output),
         "link_analysis": (LinkAnalysisStructuredOutput, _coerce_link_analysis_structured_output),
         "performance_summary": (PerformanceSummaryStructuredOutput, _coerce_performance_summary_structured_output),
+        # No coercer: the shape is provider-enforced from this same model, so
+        # there is no prose layout to repair on the way in.
+        "public_profile_analysis": (PublicProfileAnalysisStructuredOutput, None),
     }
     model_and_coercer = strict_models.get(task_type)
 
@@ -941,7 +974,10 @@ def validate_structured_output_payload(
         return None, "raw_only", None
 
     model_class, coercer = model_and_coercer
-    coerced_output, _ = coercer(structured_output)
+    # A coercer repairs prose that was parsed into roughly the right shape. Tasks
+    # whose schema the provider enforces have nothing to repair, so they declare
+    # None rather than a passthrough function nobody would recognise as one.
+    coerced_output = coercer(structured_output)[0] if coercer else structured_output
 
     try:
         validated_output = model_class.model_validate(coerced_output)

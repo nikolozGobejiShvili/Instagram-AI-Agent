@@ -153,6 +153,7 @@ class LLMService:
         "content_plan": "ContentPlanStructuredOutput",
         "performance_summary": "PerformanceSummaryStructuredOutput",
         "link_analysis": "LinkAnalysisStructuredOutput",
+        "public_profile_analysis": "PublicProfileAnalysisStructuredOutput",
     }
 
     @staticmethod
@@ -690,6 +691,48 @@ class LLMService:
                 lines.append(f"- {label}: {rendered}")
         return "\n".join(lines)
 
+    def _format_public_profile_context(self, context: dict | None) -> str:
+        """Render the reference account for the model.
+
+        Captions are listed with their engagement so the model can see which
+        openings earned attention rather than being told which did. The
+        metrics warning rides in the same block as the numbers -- separated, it
+        reads as general advice instead of a constraint on this data.
+        """
+        if not context:
+            return ""
+
+        lines = [
+            f"Reference account to learn from: @{context.get('handle')}"
+            + (f" ({context.get('name')})" if context.get("name") else ""),
+            "This is real data from Meta for an account the customer does NOT own.",
+        ]
+        for label, key in (
+            ("Bio", "biography"),
+            ("Followers", "followers_count"),
+            ("Total posts", "media_count"),
+            ("Median likes on recent posts", "median_likes"),
+        ):
+            if context.get(key) is not None:
+                lines.append(f"- {label}: {context[key]}")
+
+        mix = context.get("content_mix") or {}
+        if mix:
+            lines.append("- Recent content mix: " + ", ".join(f"{k} x{v}" for k, v in mix.items()))
+
+        captions = context.get("recent_captions") or []
+        if captions:
+            lines.append("Recent posts (caption, format, engagement):")
+            for item in captions:
+                lines.append(
+                    f'  - [{item.get("type")}] {item.get("likes")} likes / {item.get("comments")} comments: '
+                    f'"{item.get("caption")}"'
+                )
+
+        if context.get("metrics_note"):
+            lines.append(context["metrics_note"])
+        return "\n".join(lines)
+
     def _build_prompt_sections(
         self,
         *,
@@ -706,6 +749,7 @@ class LLMService:
         playbook_context: dict | None = None,
         reel_context: dict | None = None,
         brief_context: dict | None = None,
+        public_profile_context: dict | None = None,
         slide_count: int | None = None,
     ) -> list[dict[str, str]]:
         reels_high_priority_instruction = self.prompt_builder._reels_high_priority_instruction(task_type, playbook_context)
@@ -791,6 +835,7 @@ class LLMService:
         # condition is on the context object rather than on the formatted string
         # so this cannot drift when an "unavailable" wording changes.
         optional_context = [
+            ("public_profile_context", public_profile_context, self._format_public_profile_context),
             ("profile_context", profile_context, self.prompt_builder._format_profile_context),
             ("recent_posts_context", recent_posts_context, self._format_recent_posts_context),
             ("link_context", link_context, self.prompt_builder._format_link_context),
@@ -1199,6 +1244,7 @@ class LLMService:
         playbook_context: dict | None = None,
         reel_context: dict | None = None,
         brief_context: dict | None = None,
+        public_profile_context: dict | None = None,
         slide_count: int | None = None,
     ) -> dict[str, Any]:
         compact_profile_context = self._compact_profile_context(profile_context)
@@ -1230,6 +1276,7 @@ class LLMService:
             playbook_context=compact_playbook_context,
             reel_context=compact_reel_context,
             brief_context=brief_context,
+            public_profile_context=public_profile_context,
             slide_count=slide_count,
         )
         response_input, prompt_section_names = self._sections_to_response_input(prompt_sections)
@@ -1322,6 +1369,7 @@ class LLMService:
         playbook_context: dict | None = None,
         reel_context: dict | None = None,
         brief_context: dict | None = None,
+        public_profile_context: dict | None = None,
         slide_count: int | None = None,
     ) -> dict[str, Any]:
         prepared_generation = self._prepare_generation(
@@ -1338,6 +1386,7 @@ class LLMService:
             playbook_context=playbook_context,
             reel_context=reel_context,
             brief_context=brief_context,
+            public_profile_context=public_profile_context,
             slide_count=slide_count,
         )
 

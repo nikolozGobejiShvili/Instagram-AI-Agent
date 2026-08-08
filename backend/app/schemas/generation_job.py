@@ -38,6 +38,11 @@ class GenerationJobCreateRequest(BaseModel):
     # request produces the finished article.
     generate_images: bool = True
 
+    # public_profile_analysis only: the account to learn from. A handle, an
+    # @handle or the profile URL are all accepted — a customer pastes whichever
+    # their browser gave them.
+    reference_handle: str | None = None
+
 
 class GenerationJobResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", json_schema_extra={

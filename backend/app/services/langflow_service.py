@@ -151,6 +151,18 @@ class LangflowService:
                 "performance history exists. Vary format deliberately and say what each piece is for -- "
                 "reach, trust, or conversion. A calendar of unrelated topics is a list, not a plan."
             ),
+            "public_profile_analysis": (
+                "You have been given a real public account's bio, follower count, content mix and recent "
+                "captions with their engagement. Work out how that account is *assembled* -- what it posts, "
+                "in what proportion, how its captions open, what its CTA pattern is -- and convert the "
+                "transferable mechanics into a plan for this customer's niche. "
+                "Say plainly which of its tactics only work because of its scale or budget; a small shop "
+                "copying a global brand's brand-awareness posts will reach nobody. "
+                "You have likes and comments only. Never state or estimate reach, impressions, saves or "
+                "audience demographics for an account the customer does not own -- those numbers were not "
+                "provided and inventing them is the fastest way to be wrong in public. "
+                "Finish with the first three posts they should make, written out, not described."
+            ),
             "link_analysis": (
                 "Analyse the linked post and extract the transferable mechanic -- the angle, the hook "
                 "logic, the pacing, the CTA style -- then convert it into something original for this "

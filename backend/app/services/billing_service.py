@@ -40,6 +40,7 @@ class BillingService:
         "content_plan",
         "link_analysis",
         "performance_summary",
+        "public_profile_analysis",
     ]
 
     # A generation is not a fixed unit of cost. `chat` is one Sonnet call at
@@ -50,6 +51,9 @@ class BillingService:
     # pricing stays a single edit rather than a change spread across call sites.
     GENERATION_COST = {
         "carousel": 5,
+        # A Meta round trip for the target account plus a high-effort analysis
+        # over its captions -- more work than an audit of a page we already hold.
+        "public_profile_analysis": 4,
         "content_plan": 3,
         "profile_audit": 2,
         "link_analysis": 2,
@@ -129,6 +133,9 @@ class BillingService:
                 "carousel",
                 "content_plan",
                 "link_analysis",
+                # The reason someone upgrades: reading how a strong account in
+                # their niche is built is the thing a general chatbot cannot do.
+                "public_profile_analysis",
             ],
         },
         "agency": {

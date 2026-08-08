@@ -27,6 +27,7 @@ from app.services.connected_accounts_service import ConnectedAccountsService
 from app.services.job_service import JobService, JobWorker
 from app.services.llm_service import LLMService
 from app.services.marketing_brief_service import MarketingBriefService
+from app.services.public_profile_service import PublicProfileService
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ llm_service = LLMService()
 marketing_brief_service = MarketingBriefService()
 connected_accounts_service = ConnectedAccountsService()
 carousel_pipeline_service = CarouselPipelineService()
+public_profile_service = PublicProfileService()
 
 AGENT_GENERATION = "agent_generation"
 CAROUSEL_GENERATION = "carousel_generation"
@@ -55,6 +57,10 @@ _GENERATION_FIELDS = (
     # rather than a fixed five that later has to be trimmed.
     "slide_count",
 )
+
+# Not in _GENERATION_FIELDS: it is an input to the Meta lookup above, not
+# something run_agent takes. Passing it through would be an unexpected keyword.
+_REFERENCE_HANDLE_FIELD = "reference_handle"
 
 
 def _generation_kwargs(payload: dict) -> dict:
@@ -75,6 +81,21 @@ def _generation_kwargs(payload: dict) -> dict:
     except Exception as exc:  # noqa: BLE001 - a missing brief must not fail generation
         logger.warning("Could not load marketing brief: %s", exc)
         kwargs["brief_context"] = None
+
+    # Unlike the brief, this one is not optional. The whole task is "read that
+    # account and adapt it"; without the data the model would answer from what it
+    # remembers about the brand, which is exactly the generic reply the customer
+    # could have got for free.
+    if payload.get("task_type") == "public_profile_analysis":
+        profile = public_profile_service.fetch(
+            user_id=payload["user_id"],
+            account_id=connected_accounts_service.resolve_account_id(
+                payload["user_id"], payload.get("account_id")
+            ),
+            handle=payload.get("reference_handle") or payload.get("link") or "",
+        )
+        kwargs["public_profile_context"] = public_profile_service.as_prompt_context(profile)
+
     return kwargs
 
 
