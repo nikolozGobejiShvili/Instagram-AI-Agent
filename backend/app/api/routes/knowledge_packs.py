@@ -239,18 +239,13 @@ async def upload_knowledge_pack(request: Request):
     # on disk looking uploaded while retrieval found nothing. The retrieval side
     # already covers those task types (see RAG_TASK_TYPES); only ingestion was
     # narrower than the feature it fed.
+    # One index, not two. This also called Langflow's ingestion flow, which wrote
+    # into a separate Chroma store using a 64-dimension hash of the tokens rather
+    # than an embedding model -- so the same material landed in two places, and
+    # only one of them could answer a semantic query at all. The Langflow path is
+    # gone; pgvector is the store.
     if uploaded_pack.get("scope") == "system" and uploaded_pack.get("visibility") == "internal":
         _index_into_vector_store(uploaded_pack)
-        try:
-            langflow_service.ingest_system_reels_knowledge(
-                knowledge_pack_id=uploaded_pack["knowledge_pack_id"],
-                title=uploaded_pack["title"],
-                description=uploaded_pack.get("description"),
-                file_paths=knowledge_pack_service.get_pack_file_paths(uploaded_pack["knowledge_pack_id"]),
-                supported_task_types=list(uploaded_pack.get("supported_task_types") or []),
-            )
-        except LangflowServiceError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.safe_message) from exc
 
     return uploaded_pack
 

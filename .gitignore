@@ -57,6 +57,10 @@ tools/ngrok/
 # apex run state (prompt drafts, grounding digests) — local working notes
 .apex/
 
+# graphify knowledge-graph output — regenerated from the source it describes, and
+# graph.json alone is ~2 MB of derived data that would churn on every commit.
+graphify-out/
+
 # ---------------------------------------------------------------------------
 # Editors / OS
 # ---------------------------------------------------------------------------
