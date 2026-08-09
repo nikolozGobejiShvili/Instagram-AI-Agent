@@ -31,6 +31,45 @@ class UserTokenResponse(BaseModel):
     expires_in: int
 
 
+class CheckoutSessionRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "example": {
+                "user_id": "user-1",
+                "plan": "pro",
+                "success_url": "https://tichu.example/agent?checkout=done",
+                "cancel_url": "https://tichu.example/pricing",
+            }
+        },
+    )
+
+    user_id: str = Field(..., min_length=1)
+    # Not a price id: the website should ask for the tier it is selling, and the
+    # backend owns which Stripe price that is. Letting the caller name a price
+    # would put the plan/price mapping in two places.
+    plan: str = Field(..., min_length=1)
+    success_url: str = Field(..., min_length=1)
+    cancel_url: str = Field(..., min_length=1)
+
+
+class CheckoutSessionResponse(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "example": {
+                "checkout_url": "https://checkout.stripe.com/c/pay/cs_test_...",
+                "session_id": "cs_test_a1b2c3",
+                "plan": "pro",
+            }
+        },
+    )
+
+    checkout_url: str
+    session_id: str
+    plan: str
+
+
 class PaymentWebhookResponse(BaseModel):
     model_config = ConfigDict(
         extra="forbid",

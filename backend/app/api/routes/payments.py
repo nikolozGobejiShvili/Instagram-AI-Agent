@@ -11,7 +11,14 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.api.internal_auth import require_internal_admin_access  # noqa: F401  (imported for parity)
 from app.schemas.api_error import STANDARD_ERROR_RESPONSES
-from app.schemas.payment import PaymentWebhookResponse, UserTokenRequest, UserTokenResponse
+from app.api.user_auth import resolve_user_id
+from app.schemas.payment import (
+    CheckoutSessionRequest,
+    CheckoutSessionResponse,
+    PaymentWebhookResponse,
+    UserTokenRequest,
+    UserTokenResponse,
+)
 from app.services.billing_service import BillingService
 from app.services.payment_service import (
     SUBSCRIPTION_ACTIVE_EVENTS,
@@ -46,6 +53,35 @@ def issue_user_token(payload: UserTokenRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except UserTokenError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/payments/checkout", response_model=CheckoutSessionResponse, responses=STANDARD_ERROR_RESPONSES)
+def create_checkout(payload: CheckoutSessionRequest, request: Request):
+    """Start a subscription purchase and return the URL to send the customer to.
+
+    The customer comes from the user token, not the body, for the same reason
+    every other money path does: this decides whose account gets the plan, and a
+    website bug that named the wrong id would sell one customer a subscription
+    on another's account.
+    """
+    user_id = resolve_user_id(request, payload.user_id)
+
+    if payload.plan not in BillingService.PLAN_DEFAULTS:
+        raise HTTPException(status_code=400, detail=f"Unknown plan '{payload.plan}'")
+    if payload.plan == "trial":
+        # Refused explicitly: a paid checkout for the free tier would take money
+        # for something already given away.
+        raise HTTPException(status_code=400, detail="The trial plan is not purchasable")
+
+    try:
+        return payment_service.create_checkout_session(
+            user_id=user_id,
+            plan=payload.plan,
+            success_url=payload.success_url,
+            cancel_url=payload.cancel_url,
+        )
+    except PaymentError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 @router.post("/payments/stripe/webhook", response_model=PaymentWebhookResponse, include_in_schema=False)

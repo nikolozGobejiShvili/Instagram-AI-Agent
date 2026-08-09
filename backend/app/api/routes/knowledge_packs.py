@@ -250,6 +250,37 @@ async def upload_knowledge_pack(request: Request):
     return uploaded_pack
 
 
+@router.post(
+    "/reindex",
+    response_model=KnowledgePackListResponse,
+    responses=STANDARD_ERROR_RESPONSES,
+    include_in_schema=False,
+)
+def reindex_knowledge_packs(request: Request):
+    """Re-embed every stored system pack into the vector store.
+
+    Indexing happens on upload, so a pack uploaded before the embedding key was
+    configured is stored, listed, and invisible to retrieval forever — the only
+    remedy was deleting and re-uploading the files, which loses the original if
+    the operator no longer has them. It is also what makes an embedding-model
+    change survivable: rows carry the model that produced them and search filters
+    on it, so switching models silently hides the whole corpus until it is
+    rebuilt.
+
+    Idempotent: index_pack replaces a pack's rows rather than appending.
+    """
+    _require_internal_admin_access(request)
+
+    packs = knowledge_pack_service.list_packs(scope="system", visibility="internal")
+    reindexed = []
+    for pack in packs.get("knowledge_packs", []):
+        _index_into_vector_store(pack)
+        reindexed.append(pack)
+
+    logger.info("Reindexed %s knowledge pack(s)", len(reindexed))
+    return {**packs, "knowledge_packs": reindexed}
+
+
 @router.get("", response_model=KnowledgePackListResponse, responses=STANDARD_ERROR_RESPONSES, include_in_schema=False)
 def list_knowledge_packs(request: Request, domain: str | None = None):
     _require_internal_admin_access(request)

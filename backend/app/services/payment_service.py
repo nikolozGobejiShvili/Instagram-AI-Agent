@@ -66,12 +66,23 @@ class PaymentService:
         )
     """
 
-    def __init__(self, *, db_path: Path | str | None = None, webhook_secret: str | None = None):
+    def __init__(
+        self,
+        *,
+        db_path: Path | str | None = None,
+        webhook_secret: str | None = None,
+        api_key: str | None = None,
+        timeout: float | None = None,
+    ):
         data_dir = Path(__file__).resolve().parent.parent / "data"
         self.db_path = Path(db_path or os.getenv("PAYMENTS_DB_PATH") or (data_dir / "payments.sqlite3"))
         self._webhook_secret = (
             webhook_secret if webhook_secret is not None else os.getenv("STRIPE_WEBHOOK_SECRET", "")
         ).strip()
+        # Separate from the webhook secret: one signs incoming events, the other
+        # authorises outgoing calls. A deployment can hold either alone.
+        self._api_key = (api_key if api_key is not None else os.getenv("STRIPE_API_KEY", "")).strip()
+        self.timeout = float(timeout or os.getenv("STRIPE_TIMEOUT_SECONDS", "20") or 20)
         self._initialise_storage()
 
     # ------------------------------------------------------------------ storage
@@ -170,6 +181,88 @@ class PaymentService:
         return timestamp, signatures
 
     # -------------------------------------------------------------------- plans
+    @staticmethod
+    def price_for_plan(plan: str) -> str | None:
+        """The Stripe price to charge for a plan — the reverse of the webhook's
+        lookup, read from the same variable so the two cannot disagree."""
+        for price_id, mapped_plan in PaymentService._price_map().items():
+            if mapped_plan == (plan or "").strip():
+                return price_id
+        return None
+
+    @staticmethod
+    def _price_map() -> dict[str, str]:
+        mapping = {}
+        for entry in os.getenv("STRIPE_PRICE_MAP", "").split(","):
+            key, _, value = entry.strip().partition("=")
+            if key and value:
+                mapping[key.strip()] = value.strip()
+        return mapping
+
+    def create_checkout_session(self, *, user_id: str, plan: str, success_url: str, cancel_url: str) -> dict:
+        """Start a subscription purchase for one customer.
+
+        The webhook was built first and could only ever react; without this the
+        website had to create the session itself, and the one thing it must not
+        get wrong is the metadata — a session created without ``user_id`` pays
+        real money and grants nothing, which the webhook can only log after the
+        fact. Creating it here makes that impossible to forget.
+
+        The id is written into **both** the session metadata and
+        ``subscription_data.metadata``. Checkout events carry the former;
+        renewal and cancellation events are emitted against the subscription and
+        carry only the latter. Setting just one means the first payment works and
+        every event afterwards arrives unattributable.
+
+        Form-encoded HTTP rather than the Stripe SDK: this is one call, and the
+        SDK is a large dependency to add for it.
+        """
+        api_key = (self._api_key or "").strip()
+        if not api_key:
+            raise PaymentError("Payments are not configured.", status_code=503)
+
+        price_id = self.price_for_plan(plan)
+        if not price_id:
+            # Refused rather than defaulted. Guessing a price is how a customer
+            # is charged for a tier they did not choose.
+            raise PaymentError(
+                f"No Stripe price is mapped to plan '{plan}'. Set STRIPE_PRICE_MAP.",
+                status_code=503,
+            )
+
+        form = {
+            "mode": "subscription",
+            "line_items[0][price]": price_id,
+            "line_items[0][quantity]": "1",
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+            "client_reference_id": user_id,
+            "metadata[user_id]": user_id,
+            "subscription_data[metadata][user_id]": user_id,
+        }
+
+        try:
+            import httpx
+
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.post(
+                    "https://api.stripe.com/v1/checkout/sessions",
+                    data=form,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                response.raise_for_status()
+                session = response.json()
+        except Exception as exc:  # noqa: BLE001 - normalised for the caller
+            logger.warning("Stripe checkout creation failed: %s", type(exc).__name__)
+            raise PaymentError("Could not start checkout. Please try again shortly.", status_code=502) from exc
+
+        url = session.get("url")
+        if not url:
+            raise PaymentError("Stripe did not return a checkout url.", status_code=502)
+
+        logger.info("Checkout session created user_id=%s plan=%s", user_id, plan)
+        return {"checkout_url": url, "session_id": str(session.get("id") or ""), "plan": plan}
+
     @staticmethod
     def plan_for_price(price_id: str | None) -> str | None:
         """Map a Stripe price to a plan.
