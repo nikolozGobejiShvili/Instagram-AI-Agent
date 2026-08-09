@@ -34,6 +34,7 @@ from app.api.routes.carousel_media import router as carousel_media_router  # noq
 from app.api.routes.marketing_brief import router as marketing_brief_router  # noqa: E402
 from app.api.routes.generation_jobs import job_worker, router as generation_jobs_router  # noqa: E402
 from app.api.routes.payments import router as payments_router  # noqa: E402
+from app.api.routes.tracked_accounts import router as tracked_accounts_router  # noqa: E402
 from app.error_handling import http_exception_handler, request_validation_handler, unhandled_exception_handler  # noqa: E402
 from app.api.routes.link_context import router as link_context_router  # noqa: E402
 
@@ -88,6 +89,7 @@ app.include_router(marketing_brief_router)
 app.include_router(generation_history_router)
 app.include_router(generation_jobs_router)
 app.include_router(payments_router)
+app.include_router(tracked_accounts_router)
 app.include_router(internal_generation_debug_router)
 app.include_router(knowledge_packs_router)
 app.include_router(maintenance_router)
