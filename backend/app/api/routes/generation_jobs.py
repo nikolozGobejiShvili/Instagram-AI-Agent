@@ -21,6 +21,7 @@ from app.schemas.generation_job import (
     GenerationJobListResponse,
     GenerationJobResponse,
 )
+from app.services.account_context_service import AccountContextService
 from app.services.billing_service import BillingService
 from app.services.carousel_pipeline_service import CarouselPipelineService
 from app.services.connected_accounts_service import ConnectedAccountsService
@@ -40,6 +41,7 @@ marketing_brief_service = MarketingBriefService()
 connected_accounts_service = ConnectedAccountsService()
 carousel_pipeline_service = CarouselPipelineService()
 public_profile_service = PublicProfileService()
+account_context_service = AccountContextService()
 
 AGENT_GENERATION = "agent_generation"
 CAROUSEL_GENERATION = "carousel_generation"
@@ -71,27 +73,50 @@ def _generation_kwargs(payload: dict) -> dict:
     remember to resend it.
     """
     kwargs = {k: payload.get(k) for k in _GENERATION_FIELDS}
-    account_id = payload.get("account_id")
+    task_type = payload.get("task_type") or ""
+
     try:
-        brief = marketing_brief_service.get_brief(
-            payload["user_id"],
-            connected_accounts_service.resolve_account_id(payload["user_id"], account_id),
+        resolved_account_id = connected_accounts_service.resolve_account_id(
+            payload["user_id"], payload.get("account_id")
         )
+    except Exception as exc:  # noqa: BLE001 - an unconnected account is not a failed job
+        logger.warning("Could not resolve connected account: %s", exc)
+        resolved_account_id = None
+
+    try:
+        brief = marketing_brief_service.get_brief(payload["user_id"], resolved_account_id)
         kwargs["brief_context"] = marketing_brief_service.as_prompt_context(brief)
     except Exception as exc:  # noqa: BLE001 - a missing brief must not fail generation
         logger.warning("Could not load marketing brief: %s", exc)
         kwargs["brief_context"] = None
 
+    # The account's own Instagram signal. This path had none of it: the prompt
+    # builder defaults every context to None and omits the section, so every
+    # carousel, plan and audit produced here generated without knowing anything
+    # about the account it was for. Nothing errored — the answers were simply
+    # generic, which is why a green test suite never caught it.
+    account_context = account_context_service.account_context(
+        task_type=task_type, account_id=resolved_account_id
+    )
+    kwargs.update(account_context)
+
+    # Retrieved playbook material, ranked and filtered. Returns None when nothing
+    # cleared the relevance floor, which is a real answer rather than a failure.
+    kwargs["playbook_context"] = account_context_service.strategy_context(
+        task_type=task_type,
+        message=payload.get("message") or "",
+        goal=payload.get("goal"),
+        account_context=account_context,
+    )
+
     # Unlike the brief, this one is not optional. The whole task is "read that
     # account and adapt it"; without the data the model would answer from what it
     # remembers about the brand, which is exactly the generic reply the customer
     # could have got for free.
-    if payload.get("task_type") == "public_profile_analysis":
+    if task_type == "public_profile_analysis":
         profile = public_profile_service.fetch(
             user_id=payload["user_id"],
-            account_id=connected_accounts_service.resolve_account_id(
-                payload["user_id"], payload.get("account_id")
-            ),
+            account_id=resolved_account_id,
             handle=payload.get("reference_handle") or payload.get("link") or "",
         )
         kwargs["public_profile_context"] = public_profile_service.as_prompt_context(profile)

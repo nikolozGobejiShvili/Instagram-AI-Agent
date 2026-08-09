@@ -781,11 +781,12 @@ def agent_chat(payload: AgentChatRequest):
             recent_posts_context,
         )
 
-        if (
-            used_langflow
-            and not use_safe_langflow_reels
-            and should_use_knowledge_retrieval(payload.task_type, payload.message)
-        ):
+        # Retrieval no longer waits on `used_langflow`. It used to, and
+        # USE_LANGFLOW_FOR_AGENT_CHAT is false in production, so the branch never
+        # ran: material was indexed into pgvector on upload and never once read
+        # back. Whether the agent can use what it was taught should not depend on
+        # which model transport is configured.
+        if should_use_knowledge_retrieval(payload.task_type, payload.message):
             knowledge_retrieval_result = knowledge_retrieval_service.retrieve(
                 task_type=payload.task_type,
                 message=payload.message,
@@ -800,11 +801,15 @@ def agent_chat(payload: AgentChatRequest):
             knowledge_collection_name = knowledge_retrieval_result.collection_name
             knowledge_context = knowledge_retrieval_result.knowledge_context
 
+        # The reels-only local pack store, kept as a second source for the three
+        # reel tasks it was built for. It is no longer gated on `used_langflow`
+        # either -- that made it the *only* retrieval in production while the
+        # pgvector path above sat unreachable, which is the reverse of what was
+        # intended.
         if (
             effective_user_id
             and payload.task_type in REELS_SYSTEM_KNOWLEDGE_TASK_TYPES
             and not use_safe_langflow_reels
-            and not used_langflow
         ):
             try:
                 playbook_context = knowledge_pack_service.retrieve_system_context(
